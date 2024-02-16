@@ -14,7 +14,7 @@ getsharedPGV = function(web = "/gpfs/commons/home/sclarke/lab/pgv_content/", pgv
     return(pgv)
 }
 
-#create json from data.table
+#create a json from a data.table using reference settings from pgv
 dt2json = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"test.json",sep="/")) {
     #create vector of seqlengths
     settings_data <- jsonlite::fromJSON(settings)
