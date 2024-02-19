@@ -88,7 +88,9 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
 
 #function for getting the contacts with the event- input is the output of contacts_events and jabba for annotating the copy number of the target loci which is i
 contacts_events2gr = function(contacts_event.dt,jabba_gg,seqlength) {
-    names(contacts_event.dt) = c("i", "j", "value", "id", "event_type.i", "event_type.j", "seqnames", "start", "end", "seqnames.j", "start.j", "end.j", "intra_chrom", "event.numb", "footprint", "type", "chrom_in_event", "event.numb_all", "event_type_all", "sample", "event_id")
+                                        #make seqnames i,start.i, end.i as just seqnames start and end
+                                        #replace seqnames, start, end with seqnames.i.. and seqnames.j with seqnames
+    names(contacts_event.dt) = names(contacts_event.dt) %>% sub("^seqnames.i$", "seqnames", .) %>% sub("^start.i$", "start", .) %>% sub("^end.i$", "end", .)
     contacts_event.gr = GRanges(contacts_event.dt, seqlengths = seqlength)
     jab = readRDS(jabba_gg)
     nodes.dt = jab$nodes$dt
