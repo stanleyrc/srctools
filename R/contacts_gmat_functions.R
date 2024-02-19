@@ -1,12 +1,13 @@
 #function for getting the contacts of an event with other regions
-contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlengths = hg_seqlengths(),straw.cores=1, event.cores = 4,event.types = c("bfb","chromoplexy","chromothripsis","del","cpxdm","dm","dup","pyrgo","rigma","simple","tic","tyfonas"),add_event_event_contact_labels=FALSE) {
-#maybe add ability to pad to events later??,pad = NULL
+contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlengths = hg_seqlengths(),straw.cores=1, event.cores = 4,event_types = c("bfb","chromoplexy","chromothripsis","del","cpxdm","dm","dup","pyrgo","rigma","simple","tic","tyfonas"),add_event_event_contact_labels=FALSE) {
+                                        #maybe add ability to pad to events later??,pad = NULL
     if(class(gg) == "character") {
         gg = readRDS(gg)
     }
-    if("gGraph" %in% class(gg)) {}
+    ## if("gGraph" %in% class(gg)) {
+    ## }
                                         #read in hic
-    if(hic_type == ".hic") {        
+    if(hic_type == ".hic") {
         hic = GxG::straw(hic = hic,
                          res = res,
                          gr = gr_seqlengths,
@@ -15,9 +16,12 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
 #####    if(hic_type == ".mcool") ###### add this later!
     hic.gr = hic$gr %>% gr.nochr()
     hic.gr$i = 1:length(hic.gr)
-    events.dt = gg$meta$events[type %in% event.types,][,.(type,footprint)] #complex_events
+    gg = gGnome::refresh(gg)
+    events.dt = gg$meta$events
+    events.dt = events.dt[type %in% event_types,][,.(type,footprint)] #complex_events
 #get granges with all events labeled
-    events_unique.dt =  events.dt[,.(type,footprint)] %>% unique
+    ## events_unique.dt =  events.dt[,.(type,footprint)] %>% unique
+    events_unique.dt =  unique(events.dt)
     if(nrow(events_unique.dt) != 0) {
         events_unique.dt[,event.number := paste0(type,"_",1:.N), by = "type"] #add index to events to separate if multiple of same event
                                         #add events to hic gr
