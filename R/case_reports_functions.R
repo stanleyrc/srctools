@@ -30,25 +30,27 @@ dt2json_mut = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"tes
 #    jab = gGnome::refresh(jab)
     settings_y = list(y_axis = list(title = "copy number",
                                     visible = TRUE))
-    node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, .SD,.SDcols = meta_data)]
-    names(node.json) = gsub(".SD.","",names(node.json))
-    node.json[, start := NULL]
-    node.json[, end := NULL]
+    node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, .SD),.SDcols = meta_data] #fix- other syntax is wrong
+    ## node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, .SD,.SDcols = meta_data)]
+    ## names(node.json) = gsub(".SD.","",names(node.json))
+    ## node.json[, start := NULL]
+    ## node.json[, end := NULL]
     gg.js = list(intervals = node.json, connections = data.table())
     gg.js = c(list(settings = settings_y), gg.js)
+    message(paste0("Writing json to ",file_name))
     jsonlite::write_json(gg.js, file_name,
                          pretty=TRUE, auto_unbox=TRUE, digits=4)
     return(file_name)
 }
 
-create_somatic_json = function(somatic_snv_cn, out_file, pair, pgv_settings, return_table_pgv = FALSE, meta_keep = NULL) {
+create_somatic_json = function(somatic_snv_cn, out_file, pair, pgv_settings, return_table_pgv = FALSE, meta_keep = NULL, y_col = "est_cn_llrm") {
     som.dt = readRDS(somatic_snv_cn)
-    som.dt = som.dt[!is.na(est_cn_llrm),]
+    som.dt = som.dt[!is.na(get(y_col)),]
     som.dt[start == end, end := end +1]
     som.dt[, strand := NULL]
     som.dt[variant.p != "",annotation := paste0("Type: ", annotation, "; Gene: ", gene, "; Variant: ",variant.c, "; Protein_variant: ", variant.p, "; VAF: ",vaf)]
     som.dt[variant.p == "",annotation := paste0("Type: ", annotation, "; Gene: ", gene, "; Variant: ",variant.c, "; VAF: ",vaf)]
-    dt2json_mut(dt = som.dt, ref = "hg19",settings = pgv_settings, meta_data = meta_keep, y_col = "est_cn",
+    dt2json_mut(dt = som.dt, ref = "hg19",settings = pgv_settings, meta_data = meta_keep, y_col = y_col,
                 file_name = out_file)
     if(return_table_pgv) {
         dt.add = data.table(patient.id = pair, type = "genome",visible = TRUE, title = "Copy Number Mutations", source = "mutations.json")

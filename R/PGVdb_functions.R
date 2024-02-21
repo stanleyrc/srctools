@@ -13,56 +13,72 @@ getsharedPGV = function(web = "/gpfs/commons/home/sclarke/lab/pgv_content/", pgv
 
 
                                         #get templates for different plots so I don't have to remember everything that the plots need
-bw_temp = function(patient_id = NA,order = NA, x = list(NA), ref = NA, chart_type = "area", visible = TRUE, type = "bigwig", field = "foreground") {
+bw_temp = function(patient_id = NA,order = NA, x = list(NA), ref = NA, chart_type = "area", visible = TRUE, title = NA, type = "bigwig", field = "foreground") {
     dt1 = data.table(patient.id = patient_id,
                      visible = visible,
                      x = x,
                      type = type,
                      field = field,
                      ref = ref,
+                     title = title,
                      order = order,
                      defaultChartType = chart_type
                      )
     return(dt1)
 }
 
-arrow_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, chart_type = "scatterplot", visible = TRUE, type = "scatterplot", field = "foreground") {
+arrow_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, chart_type = "scatterplot", visible = TRUE, title = NA, type = "scatterplot", field = "foreground") {
     dt1 = data.table(patient.id = patient_id,
                      visible = visible,
                      x = x,
                      type = type,
                      field = field,
                      ref = ref,
+                     title = title,
                      order = order,
                      defaultChartType = chart_type
                      )
     return(dt1)
 }
 
-genome_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE) {
+genome_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE, title = NA, annotation = list(c('bfb','chromoplexy','chromothripsis','del','dm','dup','pyrgo','rigma','simple','tic','tyfonas'))) {
                                         #use type = allelic to make a color a genome graph
-    dt1 = data.table(patient.id = NA,
+    dt1 = data.table(patient.id = patient_id,
                      type = type,
-                     visible = TRUE,
-                     x = NA,
-                     ref=ref,
+                     visible = visible,
+                     title = title,
+                     x = x,
+                     ref = ref,
+                     title = title,
                      order = order,
+                     annotation = annotation
                      )
 
     return(dt1)
 }
 
-walks_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE) {
+walks_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE, title = NA) {
     dt1 = data.table(patient.id = patient_id, 
                      visible = visible,
-                     x = list(NA),
+                     x = x,
                      order = order,
-                     ref = ref
+                     ref = ref,
+                     title = title
                      )
     return(dt1)
 }
 
 
+pgv_reorder = function(pgv, update = FALSE) {
+    if(!update) {
+        pgv2 = PGVdb$new(datafiles_json_path = gsub("settings.json","datafiles.json", pgv$settings),datadir = pgv$datadir,settings = pgv$settings,higlass_metadata = pgv$higlass_metadata)
+    } else {
+        pgv2 = pgv
+    }
+    pgv2$plots = pgv2$plots[order(order),]
+    pgv2$update_datafiles_json()
+    return(pgv2)
+}
 
 
 ## getPGV = function(web = "/gpfs/commons/groups/imielinski_lab/mskiweb/sclarke/", pgv_sub_folder = "pgv/", json_file = paste0(web,pgv_sub_folder, "/public/datafiles.json"), datadir = paste0(web,pgv_sub_folder, "/public/data/"), settings = paste0(web,pgv_sub_folder, "/public/settings.json"), higlass.list = list(endpoint = "https://higlass01.nygenome.org/")) {
