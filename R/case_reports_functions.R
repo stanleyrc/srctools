@@ -30,7 +30,8 @@ dt2json_mut = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"tes
 #    jab = gGnome::refresh(jab)
     settings_y = list(y_axis = list(title = "copy number",
                                     visible = TRUE))
-    node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, .SD),.SDcols = meta_data] #fix- other syntax is wrong
+    node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, annotation = annotation)]
+    ## node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, .SD),.SDcols = meta_data] #fix- other syntax is wrong
     ## node.json = gr2dt(jab$nodes$gr[, c("snode.id","y_value",meta_data)])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id,title=snode.id,type="interval", y = y_value, .SD,.SDcols = meta_data)]
     ## names(node.json) = gsub(".SD.","",names(node.json))
     ## node.json[, start := NULL]
@@ -118,4 +119,122 @@ filtered_events_json = function(pair, oncotable, jabba_gg, out_file, cgc_file = 
             return(NULL)
         }
     }
+}
+
+
+
+#load dlrs coverage quality (derivative log ratio spread)
+##load DLRS coverage qualities
+dlrs = function(x) {
+    nx = length(x)
+    if (nx<3) {
+        stop("Vector length>2 needed for computation")
+    }
+    tmp = embed(x,2)
+    diffs = tmp[,2]-tmp[,1]
+    dlrs = IQR(diffs,na.rm=TRUE)/(sqrt(2)*1.34)
+    return(dlrs)
+}
+
+
+                                        #function for metadata json
+out_counts = "~/Projects/test_countvariants.txt"
+
+
+meta_data_json = function(pair, out_file, coverage, jabba, vcf, svaba_somatic_vcf, strelka, tumor_type_final, disease, primary_site, inferred_sex, karyograph, seqnames_loh = c(1:22), seqnames_genome_width = c(1:22,"X","Y"), write_json = TRUE, overwrite = FALSE, return_table = FALSE) {
+    if(!overwrite) {
+        if(file.exists(out_file)) {
+            print('Output already exists! - skipping sample')
+            return(NA)
+        }
+    }
+    meta.dt = data.table(pair = pair, tumor_type_final = tumor_type_final, disease = disease, primary_site = primary_site, inferred_sex = inferred_sex)
+    #get derivate log ratio spread
+    meta.dt$dlrs = dlrs(readRDS(coverage)$foreground)
+    ##Load this case's counts
+    ## meta.dt$snv_count = length(read_vcf(vcf))
+    vcf.gr = read_vcf(vcf)
+    meta.dt$snv_count = length(vcf.gr %Q% (seqnames %in% c(1:22,"X","Y")))
+    ##Count variants
+    cmd = paste0("module unload java && module load java; module load gatk; gatk CountVariants --QUIET true --verbosity ERROR"," -V ",svaba_somatic_vcf)
+    meta.dt$sv_count = system(paste(cmd, "2>/dev/null"), intern = TRUE)[2] %>% as.integer() #run the command without printing the java command
+                                        #Load jabba and get loh
+    gg = readRDS(jabba)
+    nodes.dt = gg$nodes$dt[seqnames %in% seqnames_loh]
+    totalseglen = nodes.dt$width %>% sum()
+    if('cn.low' %in% names(nodes.dt)) {
+        LOHsegs = nodes.dt[cn.low==0,] %>% .[cn.high >0] %>% .$width %>% sum()
+        ## LOH
+        LOH_frc = LOHsegs/totalseglen
+        meta.dt[,loh_fraction := LOH_frc]
+        meta.dt[,loh_seglen := LOHsegs]
+        meta.dt[,loh_total_genome := totalseglen]
+    } else {
+        meta.dt$loh_fraction = 'Not Allelic Jabba'
+    }
+    #add purity and ploidy
+    meta.dt$purity = gg$meta$purity
+    meta.dt$ploidy = gg$meta$ploidy
+
+    #' Load beta/gamma for karyograph
+    kag = readRDS(karyograph)
+    meta.dt$beta = kag$beta
+    meta.dt$gamma = kag$gamma
+    #add the total seqlengths by using the seqlengths in the jabba object
+    nodes.gr = gg$nodes$gr
+    seqlengths.dt = seqinfo(nodes.gr) %>% as.data.table(.,keep.rownames = "seqnames")
+    seqlengths.dt = seqlengths.dt[seqnames %in% seqnames_genome_width,]
+    meta.dt$total_genome_length = sum(seqlengths.dt$seqlengths)
+                                        #add tmb
+    meta.dt[,tmb := (snv_count / (as.numeric(meta.dt$total_genome_length) / 1e6))]
+    if(write_json) {
+                                        #write the json
+        message(paste0("Writing json to ",out_file))
+        write_json(meta.dt,out_file,pretty = TRUE)
+        if(return_table) {
+            return(meta.dt)
+        }
+        
+    } else {
+        return(meta.dt)
+    }
+}
+
+
+
+#########function for making case report jsons to generate distributions
+create_distributions = function(case_reports_data_folder,common_folder) {
+    files.lst = list.files(case_reports_data_folder)
+    files.lst = grep("data",files.lst,invert=TRUE, value = TRUE)
+    meta.dt = data.table(meta_json = paste0(case_reports_data_folder,files.lst,"/metadata.json"))
+    meta.dt = meta.dt[file.exists(meta_json),]
+    jsons.lst = lapply(1:nrow(meta.dt), function(x) {
+        json.dt = jsonlite::read_json(meta.dt$meta_json[x],simplifyVector = TRUE)
+    })
+    jsons.dt = rbindlist(jsons.lst, fill = TRUE)
+                                        #snv distribution json
+    snv.dt = jsons.dt[,.(pair, snv_count,tumor_type_final)] %>% setnames(.,c("pair","value","tumor_type_final_mod"))
+                                        #sv distribution json
+    sv.dt = jsons.dt[,.(pair, sv_count)] %>% setnames(.,c("pair","value"))
+    sv.dt[,id := 1:.N]
+    sv.dt = sv.dt[,.(id,pair,value)]
+                                        #loh
+    loh.dt = jsons.dt[,.(pair, tumor_type_final,loh_fraction,loh_seglen,loh_total_genome)] %>% setnames(.,c("pair","tumor_type","value","LOH_seg_len","genome_width"))
+                                        #ploidy
+    ploidy.dt = jsons.dt[,.(pair, tumor_type_final, ploidy, purity)] %>% setnames(.,c("pair","tumor_type_final","value","purity"))
+                                        #purity
+    purity.dt = jsons.dt[,.(pair, tumor_type_final, ploidy, purity)] %>% setnames(.,c("pair","tumor_type_final","ploidy","value"))
+                                        #coverage variance
+    cov_var.dt = jsons.dt[,.(pair, tumor_type_final, dlrs)] %>% setnames(.,c("pair","tumor_type_final_mod","value"))
+                                        #tmb
+    tmb.dt = jsons.dt[,.(pair, tmb, tumor_type_final)] %>% setnames(.,c("pair","tmb","tumor_type_final"))
+                                        #writing jsons
+    message(paste0("writing jsons to ",common_folder))
+    write_json(snv.dt,paste0(common_folder,"/snvCount.json"),pretty = TRUE)
+    write_json(sv.dt,paste0(common_folder,"/svCount.json"),pretty = TRUE)
+    write_json(loh.dt,paste0(common_folder,"/lohFraction.json"),pretty = TRUE)
+    write_json(ploidy.dt,paste0(common_folder,"/ploidy.json"),pretty = TRUE)
+    write_json(purity.dt,paste0(common_folder,"/purity.json"),pretty = TRUE)
+    write_json(cov_var.dt,paste0(common_folder,"/coverageVariance.json"),pretty = TRUE)
+    write_json(tmb.dt,paste0(common_folder,"/tmb.json"),pretty = TRUE)
 }

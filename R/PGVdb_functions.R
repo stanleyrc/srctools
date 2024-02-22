@@ -13,7 +13,7 @@ getsharedPGV = function(web = "/gpfs/commons/home/sclarke/lab/pgv_content/", pgv
 
 
                                         #get templates for different plots so I don't have to remember everything that the plots need
-bw_temp = function(patient_id = NA,order = NA, x = list(NA), ref = NA, chart_type = "area", visible = TRUE, title = NA, type = "bigwig", field = "foreground") {
+bw_temp = function(patient_id = NA,order = NA, x = list(NA), ref = NA, chart_type = "area", visible = TRUE, title = NA, type = "bigwig", field = "foreground", overwrite = FALSE) {
     dt1 = data.table(patient.id = patient_id,
                      visible = visible,
                      x = x,
@@ -22,12 +22,13 @@ bw_temp = function(patient_id = NA,order = NA, x = list(NA), ref = NA, chart_typ
                      ref = ref,
                      title = title,
                      order = order,
-                     defaultChartType = chart_type
+                     defaultChartType = chart_type,
+                     overwrite = overwrite
                      )
     return(dt1)
 }
 
-arrow_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, chart_type = "scatterplot", visible = TRUE, title = NA, type = "scatterplot", field = "foreground") {
+arrow_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, chart_type = "scatterplot", visible = TRUE, title = NA, type = "scatterplot", field = "foreground", overwrite = FALSE) {
     dt1 = data.table(patient.id = patient_id,
                      visible = visible,
                      x = x,
@@ -36,12 +37,13 @@ arrow_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, chart
                      ref = ref,
                      title = title,
                      order = order,
-                     defaultChartType = chart_type
+                     defaultChartType = chart_type,
+                     overwrite = overwrite
                      )
     return(dt1)
 }
 
-genome_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE, title = NA, annotation = list(c('bfb','chromoplexy','chromothripsis','del','dm','dup','pyrgo','rigma','simple','tic','tyfonas'))) {
+genome_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE, title = NA, annotation = list(c('bfb','chromoplexy','chromothripsis','del','dm','dup','pyrgo','rigma','simple','tic','tyfonas')), overwrite = FALSE) {
                                         #use type = allelic to make a color a genome graph
     dt1 = data.table(patient.id = patient_id,
                      type = type,
@@ -49,21 +51,22 @@ genome_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type
                      title = title,
                      x = x,
                      ref = ref,
-                     title = title,
                      order = order,
-                     annotation = annotation
+                     annotation = annotation,
+                     overwrite = overwrite
                      )
 
     return(dt1)
 }
 
-walks_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE, title = NA) {
+walks_temp = function(patient_id = NA, order = NA, x = list(NA), ref = NA, type = "genome", visible = TRUE, title = NA, overwrite = FALSE) {
     dt1 = data.table(patient.id = patient_id, 
                      visible = visible,
                      x = x,
                      order = order,
                      ref = ref,
-                     title = title
+                     title = title,
+                     overwrite = overwrite
                      )
     return(dt1)
 }
