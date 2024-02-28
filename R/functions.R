@@ -15,7 +15,7 @@
 ## }
 
 #create a json from a data.table using reference settings from pgv
-dt2json = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"test.json",sep="/")) {
+dt2json = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"test.json",sep="/"), chr = TRUE) {
     #create vector of seqlengths
     settings_data <- jsonlite::fromJSON(settings)
     chrom_lengths <- as.data.table(settings_data$coordinates$sets[[ref]])[,.(chromosome,startPoint,endPoint)]
@@ -31,6 +31,10 @@ dt2json = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"test.js
     settings_y = list(y_axis = list(title = "copy number",
                                   visible = TRUE))
     node.json = gr2dt(jab$nodes$gr[, "snode.id"])[, .(chromosome = seqnames, startPoint = start, endPoint = end, iid = snode.id, y = 1,title=snode.id,type="interval",strand="*")]
+    if(!chr) {
+        node.json[,chromosome := gsub("chr","",chromosome)]
+    }
+    
     gg.js = list(intervals = node.json, connections = data.table())
     gg.js = c(list(settings = settings_y), gg.js)
     jsonlite::write_json(gg.js, file_name,
@@ -104,6 +108,10 @@ hg38_gr = function(chr=TRUE,keep = c(1:22,"X","Y")) {
     } else {
         return(gr)
     }
+}
+
+gr2grl2 = function(gr, ID) {
+    return(split(gr, f = mcols(gr)[ID]))
 }
 
 

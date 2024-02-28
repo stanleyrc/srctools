@@ -13,7 +13,12 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
                          gr = gr_seqlengths,
                          mc.cores = straw.cores)
     }
-#####    if(hic_type == ".mcool") ###### add this later!
+    if(hic_type == ".mcool") {
+        hic = GxG::cooler(file = hic,
+                    res = res,
+                    gr = gr_seqlengths,
+                    mc.cores = straw.cores)
+        }
     hic.gr = hic$gr %>% gr.nochr()
     hic.gr$i = 1:length(hic.gr)
     gg = gGnome::refresh(gg)
@@ -87,15 +92,20 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
 
 
 #function for getting the contacts with the event- input is the output of contacts_events and jabba for annotating the copy number of the target loci which is i
-contacts_events2gr = function(contacts_event.dt,jabba_gg,seqlength) {
+contacts_events2gr = function(contacts_event.dt,jabba_gg,seqlength, jabba_chr = TRUE) {
                                         #make seqnames i,start.i, end.i as just seqnames start and end
                                         #replace seqnames, start, end with seqnames.i.. and seqnames.j with seqnames
     names(contacts_event.dt) = names(contacts_event.dt) %>% sub("^seqnames.i$", "seqnames", .) %>% sub("^start.i$", "start", .) %>% sub("^end.i$", "end", .)
     contacts_event.gr = GRanges(contacts_event.dt, seqlengths = seqlength)
     jab = readRDS(jabba_gg)
     nodes.dt = jab$nodes$dt
-    nodes.dt = nodes.dt[seqnames %in% paste0("chr",c(1:22,"X","Y")),]
-    nodes.dt[,seqnames := gsub("chr","",seqnames)]
+    ## subset
+    if(jabba_chr) {
+        nodes.dt = nodes.dt[seqnames %in% paste0("chr",c(1:22,"X","Y")),]
+        nodes.dt[,seqnames := gsub("chr","",seqnames)]
+    } else {
+        nodes.dt = nodes.dt[seqnames %in% c(1:22,"X","Y"),]
+    }
     nodes.gr = GRanges(nodes.dt,seqlengths = seqlength) %>% gr.nochr
     contacts_event.gr = gr.val(contacts_event.gr,nodes.gr, "cn")
     return(contacts_event.gr)
@@ -136,3 +146,52 @@ integration_site_contacts = function(contacts_event.dt, integration_gr, seqlengt
                                         #return without normalizing, can do that after
     return(seed.sub.gr2)
 }
+
+##function for transforming gmat into data table with seqnames start and end for i and 
+gmat_alldt = function(gmat) {
+    dat = gmat$dat
+    hic.gr = gmat$gr
+    gr.dt = as.data.table(hic.gr)[,.(seqnames,start,end)]
+    gr.dt[,index := 1:.N]
+    gr.dt.i = gr.dt
+    names(gr.dt.i) = c("seqnames.i","start.i","end.i","index")
+    gr.dt.j = gr.dt
+    names(gr.dt.j) = c("seqnames.j","start.j","end.j","index")
+    dat2 = merge.data.table(dat,gr.dt.i, by.x = "i", by.y = "index")
+    dat3 = merge.data.table(dat2,gr.dt.j, by.x = "j", by.y = "index")[,.(i,j,value,seqnames.i,start.i,end.i,seqnames.j,start.j,end.j)][order(i,j),]
+    return(dat3)
+}
+
+##function for annotating i and j with another granges
+annotate_gmat_dt = function(gmat_dt, annotate_gr, column, annotate.i = TRUE, annotate.j = TRUE) {
+    if(annotate.i) {
+        ## annotate i
+        gmat_dt[, c("seqnames","start","end") := .(seqnames.i, start.i, end.i)]
+        i.gr = GRanges(gmat_dt)
+        i.gr = gr.val(i.gr, annotate_gr, column)
+        colnames(mcols(i.gr))[colnames(mcols(i.gr)) == column] = paste0(column,".i") #rename column to column.i
+        if(!annotate.j) {
+            i.dt = as.data.table(i.gr)
+            i.dt[, c("seqnames","start","end","strand","width") := NULL]
+            return(i.dt)
+        }
+    }
+    if(annotate.i & annotate.j) {
+        j.dt = as.data.table(i.gr)[, c("seqnames","start","end","strand","width") := NULL]
+        j.dt[, c("seqnames","start","end") := .(seqnames.j, start.j, end.j)]
+        j.gr = GRanges(j.dt)
+        j.gr = gr.val(j.gr, annotate_gr, column)
+        colnames(mcols(j.gr))[colnames(mcols(j.gr)) == column] = paste0(column,".j") #rename column to column.j
+        final.dt = as.data.table(j.gr)[, c("seqnames","start","end","strand","width") := NULL]
+        return(final.dt)
+    }
+    if(!annotate.i & annotate.j) {
+        gmat_dt[, c("seqnames","start","end") := .(seqnames.j, start.j, end.j)]
+        j.gr = GRanges(gmat_dt)
+        j.gr = gr.val(j.gr, annotate_gr, column)
+        colnames(mcols(j.gr))[colnames(mcols(j.gr)) == column] = paste0(column,".j") #rename column to column.j
+        final.dt = as.data.table(j.gr)[, c("seqnames","start","end","strand","width") := NULL]
+        return(final.dt)
+    }
+}
+
