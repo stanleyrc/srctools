@@ -1,5 +1,5 @@
 #function for getting the contacts of an event with other regions
-contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlengths = hg_seqlengths(),straw.cores=1, event.cores = 4,event_types = c("bfb","chromoplexy","chromothripsis","del","cpxdm","dm","dup","pyrgo","rigma","simple","tic","tyfonas"),add_event_event_contact_labels=FALSE) {
+contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlengths = hg_seqlengths(),straw.cores=1, event.cores = 4,event_types = c("bfb","chromoplexy","chromothripsis","del","cpxdm","dm","dup","pyrgo","rigma","simple","tic","tyfonas"),add_event_event_contact_labels=FALSE, annotate_sum = TRUE, annotate_cn = TRUE, fill_missing_bins = TRUE) {
                                         #maybe add ability to pad to events later??,pad = NULL
     if(class(gg) == "character") {
         gg = readRDS(gg)
@@ -18,13 +18,23 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
                     res = res,
                     gr = gr_seqlengths,
                     mc.cores = straw.cores)
-        }
+    }
+    sum_contacts = hic$dat$value %>% sum
+    if(annotate_sum) {
+        i.contacts = hic$dat[,.(i,value)]
+        j.contacts = hic$dat[,.(j,value)] %>% setnames(.,c("i","value"))
+        ## i.contacts = events_contacts.dt[,.(i,value)]
+        ## j.contacts = events_contacts.dt[,.(j,value)] %>% setnames(.,c("i","value"))
+        contacts_i_j = rbind(i.contacts,j.contacts)
+        contacts_i_j[, sum_bin := sum(value), by = "i"]
+        contacts_i_j2 = contacts_i_j[,.(i,sum_bin)] %>% unique
+    }
     hic.gr = hic$gr %>% gr.nochr()
     hic.gr$i = 1:length(hic.gr)
     gg = gGnome::refresh(gg)
     events.dt = gg$meta$events
     events.dt = events.dt[type %in% event_types,][,.(type,footprint)] #complex_events
-#get granges with all events labeled
+    ##get granges with all events labeled
     ## events_unique.dt =  events.dt[,.(type,footprint)] %>% unique
     events_unique.dt =  unique(events.dt)
     if(nrow(events_unique.dt) != 0) {
@@ -46,28 +56,41 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
             ## hic_events.dt = as.data.table(hic.gr)[,.(seqnames,start, end, i,type, event_type,footprint)]
             hic_events.dt = as.data.table(hic.gr)[,.(seqnames,start, end, i,event_type)]
             dat1 = hic$dat[i %in% event.filter.gr$i | j %in% event.filter.gr$i,] #subset data to only ones in i or j in the event
+            ## add missing bins with zeroes
+            if(fill_missing_bins) {
+                ##all combos of i and j
+                all_combos.dt = expand.grid(i = 1:max(hic.gr$i),j = event.filter.gr$i) %>% as.data.table
+                sub.dat = dat1[,.(i,j)]
+                sub.dat[, i_j := paste0(i,"_",j)]
+                all_combos.dt[, i_j := paste0(i,"_",j)]
+                missing_combos.dt = all_combos.dt[!(i_j %in% sub.dat$i_j),]
+                missing_combos.dt[, i_j := NULL]
+                missing_combos.dt[, value := 0]
+                dat1 = rbind(dat1,missing_combos.dt,fill = TRUE)
+            }
             dat1[i %in% event.filter.gr$i,event_type.i := gr.event1$event_type[1]]
             dat1[j %in% event.filter.gr$i,event_type.j := gr.event1$event_type[1]]
             dat1[!is.na(event_type.i) & is.na(event_type.j), c("i","j","event_type.i","event_type.j") := .(j,i,event_type.j,event_type.i)] #move all of the contacts with the event to i and move the event to j
-                                        #add coordinates for both i and j
+            ##add coordinates for both i and j
             dat1 = merge.data.table(dat1, hic_events.dt[,.(seqnames,start,end,i)], by = "i")
             names(dat1) = gsub("seqnames","seqnames.i",names(dat1)) %>% gsub("start","start.i",.) %>% gsub("end","end.i",.)
             dat1 = merge.data.table(dat1, hic_events.dt[,.(seqnames,start,end,i)], by.x = "j", by.y = "i")
             names(dat1) = gsub("seqnames$","seqnames.j",names(dat1)) %>% gsub("start$","start.j",.) %>% gsub("end$","end.j",.)
-                                        #add whether the contact is intra chromosomal
+            ##add whether the contact is intra chromosomal
             dat1[, intra_chrom := ifelse(seqnames.i == seqnames.j,TRUE,FALSE)]
-            #add other meta data
+            ##add other meta data
             dat1[, event.numb := events_unique.dt[x,]$event.numb]
             dat1[, footprint := events_unique.dt[x,]$footprint]
             dat1[, type := events_unique.dt[x,]$type]
-                                        #add whether i and j are both on a chromosome with the event
+            ##add whether i and j are both on a chromosome with the event
             seqnames_fp = parse.gr(unique(dat1$footprint))@seqnames@values %>% gsub("chr","",.)
-            dat1[, chrom_in_event := ifelse((seqnames.i %in% seqnames_fp),TRUE,FALSE)]            
+            dat1[, chrom_in_event := ifelse((seqnames.i %in% seqnames_fp),TRUE,FALSE)]
+
             return(dat1)
         },mc.cores = event.cores)#  %>% do.call(c,.)  %>% sortSeqlevels() %>% sort()
         events_contacts.dt = rbindlist(events_contacts.lst)
         if(add_event_event_contact_labels) {
-                                        #add all event types for i and j, j already added but might want to look at contacts between different types of events later - i event needs to added where event_type.i is not na
+            ##add all event types for i and j, j already added but might want to look at contacts between different types of events later - i event needs to added where event_type.i is not na
             events.indices.i = events_contacts.dt[!is.na(event_type.i),.(i,event_type.i)] %>% unique %>% setnames(.,c("i","event_type"))
             events.indices.j = events_contacts.dt[!is.na(event_type.j),.(j,event_type.j)] %>% unique %>% setnames(.,c("i","event_type"))
             events.indices = rbind(events.indices.i,events.indices.j) %>% unique
@@ -82,6 +105,20 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
             events_contacts.dt[event_type.i == event_type.j, chrom_in_event := "contact_with_self"]
             events_contacts.dt[, event_type_all := gsub(paste0("_",seq(1,100,by = 1),collapse = "|"),"",event.numb_all)]
         }
+        ##add the total sum contacts for this sample
+        events_contacts.dt[, sum_contacts := sum_contacts]
+        if(annotate_sum) {
+            names(contacts_i_j2) = c("i"," sum_i_contacts")
+            events_contacts.dt = merge.data.table(events_contacts.dt, contacts_i_j2,by = "i")
+            names(contacts_i_j2) = c("j","sum_j_contacts")
+            events_contacts.dt = merge.data.table(events_contacts.dt, contacts_i_j2,by = "j")
+        }
+        if(annotate_cn) {
+            nodes.gr = as.data.table(gg$nodes$gr) %>% .[seqnames %in% paste0("chr",c(1:22,"X","Y")),] %>% GRanges(.,seqlengths = hg38_seq()) %>% gr.nochr
+            events_contacts.dt = annotate_gmat_dt(events_contacts.dt, nodes.gr, "cn")
+        }
+            
+        
 ########should I add contacts that were not in the original gxg object as value of 1? or 0?
                                         #Maybe also add option to return all of the data from the .hic file labeled or not labels
         return(events_contacts.dt)
@@ -176,7 +213,7 @@ annotate_gmat_dt = function(gmat_dt, annotate_gr, column, annotate.i = TRUE, ann
             return(i.dt)
         }
     }
-    if(annotate.i & annotate.j) {
+    if(annotate.i && annotate.j) {
         j.dt = as.data.table(i.gr)[, c("seqnames","start","end","strand","width") := NULL]
         j.dt[, c("seqnames","start","end") := .(seqnames.j, start.j, end.j)]
         j.gr = GRanges(j.dt)
@@ -185,7 +222,7 @@ annotate_gmat_dt = function(gmat_dt, annotate_gr, column, annotate.i = TRUE, ann
         final.dt = as.data.table(j.gr)[, c("seqnames","start","end","strand","width") := NULL]
         return(final.dt)
     }
-    if(!annotate.i & annotate.j) {
+    if(!annotate.i && annotate.j) {
         gmat_dt[, c("seqnames","start","end") := .(seqnames.j, start.j, end.j)]
         j.gr = GRanges(gmat_dt)
         j.gr = gr.val(j.gr, annotate_gr, column)

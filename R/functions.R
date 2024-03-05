@@ -47,8 +47,8 @@ dt2json = function(dt,patient.id,ref,settings,file_name = paste(getwd(),"test.js
 
 
 
-#get hic resolutions printed in scientific
-                                        #return resolutions of hic as scientific
+##get hic resolutions printed in scientific
+##return resolutions of hic as scientific
 hic_res = function(hic) {
                                         #return as scientific
     old_options = options("scipen", "digits")
@@ -56,6 +56,13 @@ hic_res = function(hic) {
                                         #get resolutions
     reses = strawr::readHicBpResolutions(hichip.pairs[pair, contact.matrix]) %>% sort() %>% signif(., digits = 5)
     on.exit(options(old_options))
+    return(print(reses))
+}
+
+##get hic resolutions printed in scientific
+hic_res2 = function(hic) {
+                                        #get resolutions
+    reses = strawr::readHicBpResolutions(hichip.pairs[pair, contact.matrix]) %>% sort() %>% signif(., digits = 5)
     return(print(reses))
 }
 
