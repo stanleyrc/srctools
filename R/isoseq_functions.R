@@ -1,3 +1,8 @@
+##qucikly rename a gwalk object to a specified first entry of a gwalk
+name.gw = function(gw, grl_col) {
+  new_names = sapply(gw$grl, function(x) mcols(x)[[grl_col]][1])
+  gw$set(name = new_names)
+}
 
 ## generate walks from gff
 isoseq_gff2gw = function(collapsed.gff, classification, chr = TRUE,subset_class = c("isoform", "structural_category", "associated_gene", "associated_transcript", "coding", "subcategory"), save_grl = NULL,save_gw = NULL, type = "walk", color = NULL, column = "structural_category", sorted = TRUE, filter_unique_isoforms = TRUE, filter_chromosomes = paste0("chr",c(1:22,"X","Y"))) {
@@ -75,7 +80,7 @@ gr2grl3 = function(gr, ID, cores = 1) {
 }
 
 ## ## reorganize this function- should have same labeling for previously annotated and newly annotated; novel should just return the matching transcripts
-get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class = NULL, type = "gw", annotate_mismatch = TRUE, annotate_mismatch_type = "percent",reann_with = "exon", reannotate = FALSE, select_type = "fraction", add_gencode_name = TRUE, cores = 1) {
+get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class = NULL, type = "gw", annotate_mismatch = TRUE, annotate_mismatch_type = "percent",reann_with = "both", reannotate = FALSE, select_type = "bases", add_gencode_name = TRUE, reverse_overlap = FALSE, consider = "only_exon_alignment", read_over_potential = 0.5, potential_over_read = 0.8,cores = 1) {
   message(paste0("Reading in ",bam))
   md.gr.bam = bamUtils::read.bam(bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
   message("Done reading")
@@ -88,9 +93,9 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
   ## gencode.gr = gencode@data[[1]] %>% unlist
   gencode.gr = gtf
   gencode.gr$type2 = gencode.gr$type
-  if(exists("potential_transcript_merge")) {
-    potential_transcript_merge = NULL
-  }
+  ## if(exists("potential_transcript_merge")) {
+  potential_transcript_merge = NULL
+  ## }
   if(!reannotate) {
     ##look for collapsed_group and collapsed_class if missing
     if(is.null(collapsed_group) | is.null(collapsed_class)) {
@@ -173,6 +178,7 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
         potential_transcripts.grl = rtracklayer::split(potential_transcripts.gr2, f = mcols(potential_transcripts.gr2)["transcript_id"])
         ## get maximum overlap of each transcript with each potential transcript
         md.novel.grl = rtracklayer::split(md.novel.gr, f = mcols(md.novel.gr)["qname"])
+        
         message("getting overlap of transcripts with potential transcripts")
         mean.overlap.dt = mclapply(names(md.novel.grl), function(tr) {
           md.sub.gr = md.novel.grl[[tr]]
@@ -186,11 +192,35 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
             }
             ## md.sub.gr$percent = md.sub.gr %O% potential.sub.gr
             if(select_type == "fraction") {
+              if(consider == "only_exon_alignment") {
+                md.sub.gr = md.sub.gr %&% potential.sub.gr
+              }
               md.sub.gr$percent = md.sub.gr %O% potential.sub.gr
-              dt_return = data.table(query = tr, subject = pot.tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = mean(md.sub.gr$percent, na.rm = TRUE))
+              ## test reverse
+              md.sub.gr2 = md.novel.grl[[tr]]
+              potential.sub.gr$percent = potential.sub.gr %O% md.sub.gr2
+              ##
+              dt_return = data.table(query = tr, subject = pot.tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = mean(md.sub.gr$percent, na.rm = TRUE), pot_over_tr = mean(potential.sub.gr$percent, na.rm = TRUE))
             } else if(select_type == "bases") {
-              md.sub.gr$percent = md.sub.gr %o% potential.sub.gr
-              dt_return = data.table(query = tr, subject = pot.tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = sum(md.sub.gr$percent, na.rm = TRUE))
+              ## md.sub.gr$percent = md.sub.gr %o% potential.sub.gr
+              ## %o% is not working hmmm
+              x = md.sub.gr
+              y = potential.sub.gr
+              ov = gr2dt(gr.findoverlaps(x, reduce(gr.stripstrand(y))))
+              if (nrow(ov)>0){
+                ov = ov[ , sum(width), keyby = query.id]
+                x$width.ov = 0
+                x$width.ov[ov$query.id] = ov$V1
+                md.sub.gr$percent = x$width.ov
+              } else {
+                md.sub.gr$percent = 0
+              }
+              ## test reverse
+              md.sub.gr2 = md.novel.grl[[tr]]
+              potential.sub.gr$percent = potential.sub.gr %O% md.sub.gr2
+              ##
+              dt_return = data.table(query = tr, subject = pot.tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = mean(md.sub.gr$percent, na.rm = TRUE), pot_over_tr = mean(potential.sub.gr$percent, na.rm = TRUE))
+              ## dt_return = data.table(query = tr, subject = pot.tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = sum(md.sub.gr$percent, na.rm = TRUE))
             }
             ##try returning the mean
             return(dt_return)
@@ -198,49 +228,74 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
           return(mean.overlap.dt)
         }, mc.cores = cores) %>% do.call(rbind,.)
         if(select_type == "fraction") {
-          mean.overlap.dt = mean.overlap.dt[mean_overlap > 0.5,][order(-mean_overlap)]
-          mean.overlap.dt[, rank_tr := 1:.N, by = "query"]
+          ## mean.overlap.dt = mean.overlap.dt[mean_overlap > 0.5 & pot_over_tr > 0.2,][order(-mean_overlap)]
+          mean.overlap.dt = mean.overlap.dt[mean_overlap > read_over_potential & pot_over_tr > potential_over_read,][order(-mean_overlap)]
+          mean.overlap.dt[, rank_tr := rank(-mean_overlap,-pot_over_tr,ties.method = "min"), by = "query"]
+          ## mean.overlap.dt[, rank_tr2 := rank(pot_over_tr,-mean_overlap,ties.method = "min"), by = "query"]
+          ## mean.overlap.dt[, rank_tr := 1:.N, by = "query"]
+          ## mean.overlap.dt[, rank_tr := 1:.N, by = "query"]
         }
         if(select_type == "bases") {
-          mean.overlap.dt = mean.overlap.dt[order(-mean_overlap)]
-          mean.overlap.dt[, rank_tr := 1:.N, by = "query"]
+          ## mean.overlap.dt = mean.overlap.dt[mean_overlap > 0.5 & pot_over_tr > 0.2,][order(-mean_overlap)]
+          mean.overlap.dt = mean.overlap.dt[mean_overlap > read_over_potential & pot_over_tr > potential_over_read,][order(-mean_overlap)]
+          mean.overlap.dt[, rank_tr := rank(-mean_overlap,-pot_over_tr,ties.method = "min"), by = "query"]
+          ## mean.overlap.dt = mean.overlap.dt[order(-mean_overlap)]
+          ## mean.overlap.dt[, rank_tr := 1:.N, by = "query"]
         }
-        message("Now getting overlap of potential transcripts with the transcripts to select the best transcript")
         ## need to rewrite to loop through the correct combinations
-        rows.cycle = mean.overlap.dt[rank_tr <= 20,]
-        mean.overlap.dt2 = mclapply(1:nrow(rows.cycle), function(x) {
-          rows.cycle.sub = rows.cycle[x,]
-          tr = rows.cycle.sub$query
-          pot.tr = rows.cycle.sub$subject
-          md.sub.gr = md.novel.grl[[tr]]          
-          potential.sub.gr = potential_transcripts.grl[[pot.tr]]
-          if(reann_with == "both") {
-            potential.sub.gr = potential.sub.gr[potential.sub.gr$type != "transcript"]
-          } else if (reann_with == "exon") {
-            potential.sub.gr = potential.sub.gr[!(potential.sub.gr$type %in% c("transcript","UTR"))]
-          }
-          ## md.sub.gr$percent = md.sub.gr %O% potential.sub.gr
+        if(reverse_overlap) { # this option should be removed- ultimately in the loop above
+          message("Now getting overlap of potential transcripts with the transcripts to select the best transcript")
+          rows.cycle = mean.overlap.dt[rank_tr <= 20,]
+          mean.overlap.dt2 = mclapply(1:nrow(rows.cycle), function(x) {
+            rows.cycle.sub = rows.cycle[x,]
+            tr = rows.cycle.sub$query
+            pot.tr = rows.cycle.sub$subject
+            md.sub.gr = md.novel.grl[[tr]]          
+            potential.sub.gr = potential_transcripts.grl[[pot.tr]]
+            if(reann_with == "both") {
+              potential.sub.gr = potential.sub.gr[potential.sub.gr$type != "transcript"]
+            } else if (reann_with == "exon") {
+              potential.sub.gr = potential.sub.gr[!(potential.sub.gr$type %in% c("transcript","UTR"))]
+            }
+            ## md.sub.gr$percent = md.sub.gr %O% potential.sub.gr
+            if(select_type == "fraction") {
+              potential.sub.gr$percent = potential.sub.gr %O% md.sub.gr
+            } else if(select_type == "bases") {
+              ## potential.sub.gr$percent = potential.sub.gr %o% md.sub.gr
+              ## md.sub.gr$percent = md.sub.gr %o% potential.sub.gr
+              ## %o% is not working hmmm
+              x = potential.sub.gr
+              y = md.sub.gr
+              ov = gr2dt(gr.findoverlaps(x, reduce(gr.stripstrand(y))))
+              if (nrow(ov)>0){
+                ov = ov[ , sum(width), keyby = query.id]
+                x$width.ov = 0
+                x$width.ov[ov$query.id] = ov$V1
+                potential.sub.gr$percent = x$width.ov
+              } else {
+                potential.sub.gr$percent = 0
+              }
+
+            }
+            ##try returning the mean
+            return(data.table(query = pot.tr, subject = tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = mean(potential.sub.gr$percent, na.rm = TRUE)))
+          }) %>% do.call(rbind,.)
           if(select_type == "fraction") {
-            potential.sub.gr$percent = potential.sub.gr %O% md.sub.gr
-          } else if(select_type == "bases") {
-            potential.sub.gr$percent = potential.sub.gr %o% md.sub.gr
+            mean.overlap.dt2 = mean.overlap.dt2[mean_overlap > 0.5,][order(-mean_overlap)] %>% unique
+            mean.overlap.dt2[order(-mean_overlap), rank_tr := 1:.N, by = "subject"]
+            names(mean.overlap.dt2) = c("subject", "query", "gene_name", "mean_overlap", "rank_tr")
+            mean.overlap.dt2 = rbind(mean.overlap.dt2, mean.overlap.dt)
+            mean.overlap.dt2 = mean.overlap.dt2[, .SD[which.min(rank_tr)], by = query]
           }
-          ##try returning the mean
-          return(data.table(query = pot.tr, subject = tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = mean(potential.sub.gr$percent, na.rm = TRUE)))
-        }) %>% do.call(rbind,.)
-        if(select_type == "fraction") {
-          mean.overlap.dt2 = mean.overlap.dt2[mean_overlap > 0.5,][order(-mean_overlap)] %>% unique
-          mean.overlap.dt2[order(-mean_overlap), rank_tr := 1:.N, by = "subject"]
-          names(mean.overlap.dt2) = c("subject", "query", "gene_name", "mean_overlap", "rank_tr")
-          mean.overlap.dt2 = rbind(mean.overlap.dt2, mean.overlap.dt)
-          mean.overlap.dt2 = mean.overlap.dt2[, .SD[which.min(rank_tr)], by = query]
-        }
-        if(select_type == "bases") {
-          mean.overlap.dt2 = mean.overlap.dt2[mean_overlap > 0.5,][order(-mean_overlap)]
-          mean.overlap.dt2[, rank_tr := 1:.N, by = "subject"]
-          names(mean.overlap.dt2) = c("subject", "query", "gene_name", "mean_overlap", "rank_tr")
-          mean.overlap.dt2 = rbind(mean.overlap.dt2, mean.overlap.dt)
-          mean.overlap.dt2 = mean.overlap.dt2[, .SD[which.min(rank_tr)], by = query]
+          if(select_type == "bases") {
+            mean.overlap.dt2 = mean.overlap.dt2[mean_overlap > 0.5,][order(-mean_overlap)]
+            mean.overlap.dt2[, rank_tr := 1:.N, by = "subject"]
+            names(mean.overlap.dt2) = c("subject", "query", "gene_name", "mean_overlap", "rank_tr")
+            mean.overlap.dt2 = rbind(mean.overlap.dt2, mean.overlap.dt)
+            mean.overlap.dt2 = mean.overlap.dt2[, .SD[which.min(rank_tr)], by = query]
+          }
+        } else {
+          mean.overlap.dt2 = mean.overlap.dt[, .SD[which.min(rank_tr)], by = query]
         }
         mean.overlap.dt2[, N_gene := .N, by = "query"]
         if(any(mean.overlap.dt2$N_gene > 1)) {
@@ -263,28 +318,126 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
           ## potential_transcripts = mean.overlap.dt2$query
           potential_transcripts_merge = mean.overlap.dt2[,.(subject,query)] %>% unique()
         }
-      }
-      if(is.null("potential_transcript_merge")) {
-        add.potential.ts = potential.gtf.dt[transcript_id %in% potential_transcripts,.(gene_name,transcript_id)] %>% unique
+        if(is.null(potential_transcripts_merge)) {
+          add.potential.ts = potential.gtf.dt[transcript_id %in% potential_transcripts$transcript_id,.(gene_name,transcript_id)] %>% unique
+          md.novel.dt2 = merge.data.table(as.data.table(md.novel.gr),add.potential.ts, by = "gene_name", all.x = TRUE) #add gene name to novel
+          md.novel.dt2[is.na(transcript_id), transcript_id := "multiple_potential_genes"]
+        }
+        if(!is.null(potential_transcripts_merge)) {
+          add.potential.ts = potential.gtf.dt[transcript_id %in% potential_transcripts_merge$subject,.(gene_name,transcript_id)] %>% unique
+          add.potential.ts = merge.data.table(potential_transcripts_merge, add.potential.ts, by.x = "subject", by.y = "transcript_id", all.x = TRUE) %>% setnames(., c("transcript_id","qname","gene_name"))
+          md.novel.gr$gene_name = NULL
+          md.novel.dt2 = merge.data.table(as.data.table(md.novel.gr),add.potential.ts, by = "qname", all.x = TRUE) #add gene name & most likely transcript to novel
+          md.novel.dt2[is.na(transcript_id), transcript_id := "multiple_potential_genes"]        
+          if(nrow(md.novel.dt2[transcript_id == "multiple_potential_genes",]) > 0) {
+            warning("Some transcript have multiple potential genes. They will not be returned. Use reannotate = TRUE to get better transcript predictions")
+          }
+        }
+        ## now annotation the exons overlaps
+        md_potential_tr.gr = GRanges(md.novel.dt2[transcript_id != "multiple_potential_genes",], seqlengths = hg_seqlengths()) ## subset to ones attempting to annotate
+        potential.gtf.labels = potential.gtf.dt[transcript_id %in% unique(md_potential_tr.gr$transcript_id) & type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
+        potential.gtf.labels$coding_type = as.character(potential.gtf.labels$type)
+      } else if(annotate_mismatch_type == "smart") {
+        gtf.sub.gr = gtf.gr[gtf.gr$type == "transcript"]
+        gtf.sub.gr$perc_overlap = gtf.sub.gr %O% md.novel.gr
+        potential_transcripts = gtf.sub.gr %Q% (perc_overlap != 0)
+        ## get transcripts into grl rather than getting the max overlap with transcripts in annotate_mismatch_type = "match"
+        potential_transcripts.gr2 = gtf.gr[gtf.gr$transcript_id %in% unique(potential_transcripts$transcript_id) & type != "transcript"]
+        potential_transcripts.grl = rtracklayer::split(potential_transcripts.gr2, f = mcols(potential_transcripts.gr2)["transcript_id"])
+        ## get maximum overlap of each transcript with each potential transcript
+        md.novel.grl = rtracklayer::split(md.novel.gr, f = mcols(md.novel.gr)["qname"])
+        
+        message("getting overlap of transcripts with potential transcripts")
+        mean.overlap.dt = mclapply(names(md.novel.grl), function(tr) {
+          md.sub.gr = md.novel.grl[[tr]]
+          mean.overlap.dt = lapply(names(potential_transcripts.grl), function(pot.tr) {
+            potential.sub.gr = potential_transcripts.grl[[pot.tr]]
+            ## annotate with utr and exons or just exons
+            if(reann_with == "both") {
+              potential.sub.gr = potential.sub.gr[potential.sub.gr$type != "transcript"]
+            } else if (reann_with == "exon") {
+              potential.sub.gr = potential.sub.gr[!(potential.sub.gr$type %in% c("transcript","UTR"))]
+            }
+            ## md.sub.gr$percent = md.sub.gr %O% potential.sub.gr
+            if(select_type == "base_overlap") {
+              ## md.sub.gr$percent = md.sub.gr %o% potential.sub.gr
+              ## %o% is not working hmmm
+              x = md.sub.gr
+              y = potential.sub.gr
+              ov = gr2dt(gr.findoverlaps(x, reduce(gr.stripstrand(y))))
+              if (nrow(ov)>0) {
+                ov = ov[ , sum(width), keyby = query.id]
+                x$width.ov = 0
+                x$width.ov[ov$query.id] = ov$V1
+                ##new part for annotate_mismatch_type == "smart"
+                y_sum_bases = y@ranges@width %>% sum
+                x_sum_bases = x@ranges@width %>% sum
+                ov_sum_bases = x$width.ov %>% sum
+                ## ov_sum_bases = ov$width %>% sum
+                potential_leftout = y_sum_bases - ov_sum_bases
+                tr_leftout = x_sum_bases - ov_sum_bases
+                ##end new
+              } else {
+                tr_leftout = "ALL"
+                potential_leftout = "ALL"
+              }
+              dt_return = data.table(query = tr, subject = pot.tr, gene_name = unique(potential.sub.gr$gene_name),mean_overlap = tr_leftout, pot_over_tr = potential_leftout)
+            }
+            ##try returning the mean
+            return(dt_return)
+          }) %>% do.call(rbind,.)
+          return(mean.overlap.dt)
+        }, mc.cores = cores) %>% do.call(rbind,.)
+        if(select_type == "base_overlap") {
+          mean.overlap.dt[, mean_overlap := as.numeric(mean_overlap)]
+          mean.overlap.dt[, pot_over_tr := as.numeric(pot_over_tr)]
+          mean.overlap.dt[, sum_missing := (mean_overlap + pot_over_tr)]
+          mean.overlap.dt[, rank_tr := rank(sum_missing,ties.method = "min"), by = "query"]
+          mean.overlap.dt2 = mean.overlap.dt[, .SD[which.min(rank_tr)], by = query]
+        }
+        mean.overlap.dt2[, N_gene := .N, by = "query"]
+        if(any(mean.overlap.dt2$N_gene > 1)) {
+          warning(paste0("multiple potential transcripts found for "),unique(mean.overlap.dt2[N_gene > 1,]$gene_name), "will try to assign one based on the lowest support level in gtf (most support)")        
+          select.dt = potential.gtf.dt[type == "transcript",][transcript_id %in% (mean.overlap.dt2[N_gene > 1,]$query),]
+          select.dt = select.dt[which(transcript_support_level == min(transcript_support_level)),] #get the entries with the minimum
+          select.dt[, N_gene := .N, by = "gene_name"]
+          if(any(select.dt$N_gene > 1)) {
+            warning(paste0("Multiple transcripts still found, selecting the shorter one for ",unique(select.dt[N_gene > 1,]$gene_name)))
+            select.dt = select.dt[which(width == min(width)),]
+            rbind(select.dt,mean.overlap.dt2[N_gene  == 1,],fill = TRUE)
+          }
+          potent_tr = select.dt$transcript_id
+        }
+        if(exists("potent_tr")) {
+          if(length(potent_tr) > 0) {
+            potential_transcripts = c(potent_tr, mean.overlap.dt2[N_gene == 1,]$query)
+          }
+        } else {
+          ## potential_transcripts = mean.overlap.dt2$query
+          potential_transcripts_merge = mean.overlap.dt2[,.(subject,query)] %>% unique()
+        }
+      if(is.null(potential_transcripts_merge)) {
+        add.potential.ts = potential.gtf.dt[transcript_id %in% potential_transcripts$transcript_id,.(gene_name,transcript_id)] %>% unique
         md.novel.dt2 = merge.data.table(as.data.table(md.novel.gr),add.potential.ts, by = "gene_name", all.x = TRUE) #add gene name to novel
         md.novel.dt2[is.na(transcript_id), transcript_id := "multiple_potential_genes"]
       }
-      if(!is.null("potential_transcript_merge")) {
+      if(!is.null(potential_transcripts_merge)) {
         add.potential.ts = potential.gtf.dt[transcript_id %in% potential_transcripts_merge$subject,.(gene_name,transcript_id)] %>% unique
         add.potential.ts = merge.data.table(potential_transcripts_merge, add.potential.ts, by.x = "subject", by.y = "transcript_id", all.x = TRUE) %>% setnames(., c("transcript_id","qname","gene_name"))
         md.novel.gr$gene_name = NULL
         md.novel.dt2 = merge.data.table(as.data.table(md.novel.gr),add.potential.ts, by = "qname", all.x = TRUE) #add gene name & most likely transcript to novel
         md.novel.dt2[is.na(transcript_id), transcript_id := "multiple_potential_genes"]        
-      }
-      if(nrow(md.novel.dt2[transcript_id == "multiple_potential_genes",]) > 0) {
-        warning("Some transcript have multiple potential genes. They will not be returned. Use reannotate = TRUE to get better transcript predictions")
+        if(nrow(md.novel.dt2[transcript_id == "multiple_potential_genes",]) > 0) {
+          warning("Some transcript have multiple potential genes. They will not be returned. Use reannotate = TRUE to get better transcript predictions")
+        }
       }
       ## now annotation the exons overlaps
       md_potential_tr.gr = GRanges(md.novel.dt2[transcript_id != "multiple_potential_genes",], seqlengths = hg_seqlengths()) ## subset to ones attempting to annotate
       potential.gtf.labels = potential.gtf.dt[transcript_id %in% unique(md_potential_tr.gr$transcript_id) & type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
       potential.gtf.labels$coding_type = as.character(potential.gtf.labels$type)
+      }
     }
-    if(exists("md.novel.dt2") & !reannotate) {    
+    if(exists("md.novel.dt2") & !reannotate) {
     gtf.possible.tr.dt = as.data.table(gtf.gr)[transcript_id %in% md.full$associated_transcript | transcript_id %in% md.sub$associated_transcript, .(gene_name, transcript_id)] %>% unique      
     md.annotated = rbind(md.full,md.sub)
     md.annotated = merge.data.table(md.annotated, gtf.possible.tr.dt, by.x = "associated_transcript",by.y = "transcript_id",all.x = TRUE)
@@ -315,9 +468,18 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
       md_potential_tr.sub.gr = md_potential_tr.gr %Q% (transcript_id == tr)
       potential.gtf.labels.sub = potential.gtf.labels %Q% (transcript_id == tr)
       ##breaks isn't working properly-convert these to breakpoints
-      potential.gtf.labels.sub.dt = as.data.table(potential.gtf.labels.sub)[,.(seqnames,start,end)]
-      bps.dt = data.table(seqnames = c(potential.gtf.labels.sub.dt$seqnames, potential.gtf.labels.sub.dt$seqnames), end = c(potential.gtf.labels.sub.dt$start,potential.gtf.labels.sub.dt$end)) %>% unique
+      potential.gtf.labels.sub.dt = as.data.table(potential.gtf.labels.sub)[,.(seqnames,start,end,strand)]
+      ##test end + 1 for pos
+      bps.dt = data.table(seqnames = c(potential.gtf.labels.sub.dt$seqnames, potential.gtf.labels.sub.dt$seqnames), end = c(potential.gtf.labels.sub.dt$start,potential.gtf.labels.sub.dt$end), strand = as.character(potential.gtf.labels.sub.dt$strand, potential.gtf.labels.sub.dt$strand), start_end = c(rep("start",nrow(potential.gtf.labels.sub.dt)),rep("end",nrow(potential.gtf.labels.sub.dt)))) %>% unique
       bps.dt[,start := end -1]
+      bps.dt[start_end == "start", end := end - 1]
+      bps.dt[start_end == "start", start := start - 1]
+      bps.dt[start_end == "end", end := end + 1]
+      bps.dt[start_end == "end", start := start + 1]
+      ##test labels
+      ## bps.dt[,start := start + 1]
+      ## bps.dt[,end := start]
+      ##
       bps.gr = GRanges(bps.dt[order(start)], seqlengths = hg_seqlengths()) %>% gr.chr
       
       ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = potential.gtf.labels.sub,md_potential_tr.sub.gr)
