@@ -80,7 +80,24 @@ gr2grl3 = function(gr, ID, cores = 1) {
 }
 
 ## ## reorganize this function- should have same labeling for previously annotated and newly annotated; novel should just return the matching transcripts
-get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class = NULL, type = "gw", annotate_mismatch = TRUE, annotate_mismatch_type = "percent",reann_with = "both", reannotate = FALSE, select_type = "bases", add_gencode_name = TRUE, reverse_overlap = FALSE, consider = "only_exon_alignment", read_over_potential = 0.5, potential_over_read = 0.8,cores = 1) {
+get_iso_reads = function(bam,
+                         gr,
+                         gtf,
+                         collapsed_group = NULL, #pacbio pigeon annotation output, if reannotate = FALSE and this, will look for 
+                         collapsed_class = NULL, #pacbio pigeon annotation output, if reannotate = FALSE and this, will look for 
+                         type = "gw",
+                         annotate_mismatch = TRUE,
+                         annotate_mismatch_type = "smart",
+                         reann_with = "both", #whether to match using both exons and UTRS or just exon ("exon")
+                         reannotate = FALSE,
+                         select_type = "bases", #only bases works for annotate_mismatch_type = "smart"
+                         add_gencode_name = TRUE, #add the gencode name to the transcript for plotting
+                         reverse_overlap = FALSE, #old method - need to remove
+                         consider = "only_exon_alignment", #only applies to select_type = "fraction"
+                         read_over_potential = 0.5, #only applies to annotate_mismatch_type = "percent"
+                         potential_over_read = 0.8, #only applies to annotate_mismatch_type = "percent"
+                         minimize = "tr_bases_missing", #only applies to annotate_mismatch_type = smart, typically works better then sum
+                         cores = 1) {
   message(paste0("Reading in ",bam))
   md.gr.bam = bamUtils::read.bam(bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
   message("Done reading")
@@ -359,7 +376,7 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
               potential.sub.gr = potential.sub.gr[!(potential.sub.gr$type %in% c("transcript","UTR"))]
             }
             ## md.sub.gr$percent = md.sub.gr %O% potential.sub.gr
-            if(select_type == "base_overlap") {
+            if(select_type == "bases") {
               ## md.sub.gr$percent = md.sub.gr %o% potential.sub.gr
               ## %o% is not working hmmm
               x = md.sub.gr
@@ -388,12 +405,17 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
           }) %>% do.call(rbind,.)
           return(mean.overlap.dt)
         }, mc.cores = cores) %>% do.call(rbind,.)
-        if(select_type == "base_overlap") {
+        if(select_type == "bases") {
           mean.overlap.dt[, mean_overlap := as.numeric(mean_overlap)]
           mean.overlap.dt[, pot_over_tr := as.numeric(pot_over_tr)]
           mean.overlap.dt[, sum_missing := (mean_overlap + pot_over_tr)]
           mean.overlap.dt[, rank_tr := rank(sum_missing,ties.method = "min"), by = "query"]
-          mean.overlap.dt2 = mean.overlap.dt[, .SD[which.min(rank_tr)], by = query]
+          if(minimize == "sum") {
+            mean.overlap.dt2 = mean.overlap.dt[, .SD[which.min(rank_tr)], by = query]
+          }
+          if(minimize == "tr_bases_missing") {
+            mean.overlap.dt2 = mean.overlap.dt[, .SD[which.min(mean_overlap)], by = query]
+          }
         }
         mean.overlap.dt2[, N_gene := .N, by = "query"]
         if(any(mean.overlap.dt2$N_gene > 1)) {
@@ -513,6 +535,7 @@ get_iso_reads = function(bam, gr, gtf, collapsed_group = NULL, collapsed_class =
     md.gr2 = GRanges(md.dt4, seqlengths = hg_seqlengths())
     ## convert to grl and gw
     message("converting to grl")
+    md.gr2$qr_tr = paste0(gsub("transcript/","",md.gr2$qname),"; ", md.gr2$transcript_name)
     md.grl2 = rtracklayer::split(md.gr2, f = mcols(md.gr2)["qname"])
     message("done coverting to grl")
   } else {
