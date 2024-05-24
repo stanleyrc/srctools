@@ -32,6 +32,62 @@ name.gw = function(gw, cols= NULL, div = "; ", col = NULL) {
   gw$set(name = new_names)
 }
 
+## function to reduce the transcripts plotted by combining the same transcript into one and returning the counts
+collapse_same_tr = function(gw, keep_longest = TRUE, keep_incomplete_matches = TRUE) {
+  if(!keep_incomplete_matches) {
+    stop("this is not implemented are probably not going to be... Should keep all incomplete matches")
+  }
+  ##get the transcript assigned for each qname
+  tr.qname.dt = lapply(gw$grl, function(x) as.data.table(unique(mcols(x)[c("qname","structural_category", "transcript_id")]))) %>% rbindlist %>% unique
+  if(nrow(tr.qname.dt) != length(gw)) {
+    stop("there is more than one transcript assigned for at least one qname or a nonunique entry based on qname and transcript_id")
+  }
+  tr.qname.dt[, ID := 1:.N]
+  unique.trs.dt = tr.qname.dt[,.(structural_category,transcript_id)] %>% unique
+  if(!(nrow(unique.trs.dt) > 0)) {
+    warning("no full-splice_match to reduce")
+    return(gw)
+  }
+  unique_tr.lst = unique.trs.dt[structural_category == "full-splice_match",]$transcript_id
+  
+  ids.keep.lst = lapply(unique_tr.lst, function(tr) {
+    tr.collapse.dt = tr.qname.dt[transcript_id == tr & structural_category == "full-splice_match",]
+    ##find which transcript has the largest width
+    length.tr.dt = lapply(tr.collapse.dt$ID, function(x) {
+      length.tr = gw$grl[[x]]@ranges@width %>% sum
+      return(data.table(id = x, length_tr = length.tr))
+    }) %>% rbindlist(.)
+    keep.id = length.tr.dt[which.max(length_tr),]$id
+    return(keep.id)
+  }) %>% unlist
+  ids.keep.lst = c(ids.keep.lst, tr.qname.dt[structural_category != "full-splice_match",]$ID) %>% sort %>% unique
+  ##add counts of transcripts getting collapsed
+  splice_match.dt = tr.qname.dt[structural_category == "full-splice_match",]
+  splice_match.dt[, count := .N, by = c("structural_category", "transcript_id")]
+  splice_match.dt2 = rbind(splice_match.dt,tr.qname.dt[structural_category != "full-splice_match",], fill = TRUE)
+  splice_match.dt2[is.na(count), count := 1]  
+  gw.grl = gw$grl
+  sub.dt = lapply(ids.keep.lst, function(x) {
+    sub.gr = gw.grl[[x]]
+    sub.gr$count = splice_match.dt2[ID == x,]$count
+    return(as.data.table(sub.gr))
+  }) %>% rbindlist(.)
+  sub.gr = GRanges(sub.dt, seqlengths = hg_seqlengths())
+  sub.grl = rtracklayer::split(sub.gr, f = mcols(sub.gr)["qname"])
+  sub.gw = gW(grl = sub.grl)
+  ## setup gw same as in get_iso_reads
+  ## add coloring of nodes to match track.gencode
+  cmap.dt = data.table(category = c("exon", "intron", "start_codon", "stop_codon", "UTR", "del", "missing"), color = c("#0000FF99", "#FF0000B3", "green", "red", "#A020F066", "orange", "orange"))
+  for(x in 1:nrow(cmap.dt)) {
+    cmap.sub = cmap.dt[x,]
+    sub.gw$nodes[coding_type_simple == cmap.sub$category]$mark(col = cmap.sub$color)
+  }
+  transcript_names = sapply(sub.gw$grl, function(x) x$transcript_name[1])
+  sub.gw$set(name = transcript_names)
+  return(sub.gw)
+}
+
+
 ## generate walks from gff
 isoseq_gff2gw = function(collapsed.gff, classification, chr = TRUE,subset_class = c("isoform", "structural_category", "associated_gene", "associated_transcript", "coding", "subcategory"), save_grl = NULL,save_gw = NULL, type = "walk", color = NULL, column = "structural_category", sorted = TRUE, filter_unique_isoforms = TRUE, filter_chromosomes = paste0("chr",c(1:22,"X","Y"))) {
   gff.dt = readGFF(collapsed.gff) %>% as.data.table
@@ -129,6 +185,10 @@ get_iso_reads = function(bam,
                          cores = 1) {
   message(paste0("Reading in ",bam))
   md.gr.bam = bamUtils::read.bam(bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
+  if(length(md.gr.bam) == 0) {
+    warning("no reads in the specified region. Returning null")
+    return(NULL)
+  }
   message("Done reading")
   md.dt = as.data.table(md.gr.bam)
   md.dt = md.dt[width != 0,]
@@ -136,6 +196,9 @@ get_iso_reads = function(bam,
   message("Splicing cigar string")
   md.grl = bamUtils::splice.cigar(md.gr,get.seq = TRUE, rem.soft = FALSE)
   message("Done Splicing cigar string")
+  if(length(md.grl) == 0) {
+    return(NULL)
+  }
   ## gencode.gr = gencode@data[[1]] %>% unlist
   gencode.gr = gtf
   gencode.gr$type2 = gencode.gr$type
@@ -397,7 +460,6 @@ get_iso_reads = function(bam,
         potential_transcripts.grl = rtracklayer::split(potential_transcripts.gr2, f = mcols(potential_transcripts.gr2)["transcript_id"])
         ## get maximum overlap of each transcript with each potential transcript
         md.novel.grl = rtracklayer::split(md.novel.gr, f = mcols(md.novel.gr)["qname"])
-        
         message("getting overlap of transcripts with potential transcripts")
         mean.overlap.dt = mclapply(names(md.novel.grl), function(tr) {
           md.sub.gr = md.novel.grl[[tr]]
@@ -541,7 +603,7 @@ get_iso_reads = function(bam,
       ## bps.dt[,start := start + 1]
       ## bps.dt[,end := start]
       ##
-      bps.gr = GRanges(bps.dt[order(start)], seqlengths = hg_seqlengths()) %>% gr.chr
+      bps.gr = GRanges(bps.dt[order(start)], seqlengths = hg_seqlengths(chr = FALSE)) %>% gr.chr
       
       ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = potential.gtf.labels.sub,md_potential_tr.sub.gr)
       md_potential_tr.gr2 = gUtils::gr.breaks(bp = bps.gr,md_potential_tr.sub.gr)
