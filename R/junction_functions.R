@@ -1,4 +1,83 @@
 
+get_dispersion2 = function(bins_list, anchor_lift_dt,pval_column, mcores=1) {
+    mclapply(bins_list, function(bin1) {
+        lambda_not_permute1 = get_lambda(with(anchor_lift_dt[bin == bin1 & permute == "not_permute",],get(pval_column)))
+        ##        lambda_not_permute1 = lambda_pval(with(anchor_lift_dt[bin == bin1 & permute == "not_permute",],get(pval_column)),plotly=TRUE)
+        lambda_permute1 = get_lambda(with(anchor_lift_dt[bin == bin1 & permute == "permute",],get(pval_column)))
+        ##        lambda_permute1 = lambda_pval(with(anchor_lift_dt[bin == bin1 & permute == "permute",],get(pval_column)),plotly=TRUE)
+        dt.long = data.table(lambda = c(lambda_not_permute1,lambda_permute1),bin = bin1, permute = c("not_permuted","permuted"))
+        return(dt.long)
+    },mc.cores=mcores)
+}
+
+
+##create function that swaps peaks or swaps junctions for permutting lambda-does not require input of padj_column which is required to get peak enrichment (defining peaks requires the adjusted p value where as calculating lambda does not)
+alift_permute_lambda3 = function(random_pairs,bin_size,counts_file_col,rand_counts_file_col,junctions_gr,last_bin = -5e7,pval_column,swap = "peaks",mcores=1, meta_keep = NULL, add_label_from_col = NULL, annotate_closest = TRUE) {
+    mclapply(setNames(nm = random_pairs$pair),function(pair) {
+        if(class(random_pairs[pair,get(counts_file_col)]) == "character") {
+            dt.sub = readRDS(random_pairs[pair,get(counts_file_col)])
+            counts.gr = dt2gr(dt.sub)
+            if(swap == "peaks") {
+                rand.pair = random_pairs[pair,random_pair]
+                dt.sub2 = readRDS(random_pairs[random_pair==rand.pair,get(rand_counts_file_col)])
+                counts.gr2 = dt2gr(dt.sub2)
+            }
+        } else if (class(random_pairs[pair,get(counts_file_col)][[1]]) == "GRanges") {
+            counts.gr = random_pairs[pair,get(counts_file_col)][[1]]
+            ##subset the random_pairs
+            rand.pair = random_pairs[pair,random_pair]
+            dt.sub2 = readRDS(random_pairs[random_pair==rand.pair,get(rand_counts_file_col)])
+            counts.gr2 = dt2gr(dt.sub2)
+            counts.gr2 = counts.gr2 %&% counts.gr
+        } 
+        ##junctions from pair
+        junctions.sub.gr = junctions_gr %Q% (sample %in% pair)
+        alift.pks.gr = gUtils::anchorlift(counts.gr,
+                                          junctions.sub.gr,
+                                          window = -last_bin)
+        alift.pks.dt = as.data.table(alift.pks.gr)
+        alift.pks.dt[,permute := "not_permute"]
+                                        #junctions from random pair within project
+        ## junctions.sub.gr2 = junctions_gr %Q% (sample==rand.pair)
+                                        #counts from random pair within project
+        if(swap == "peaks") {
+            alift.pks.gr = gUtils::anchorlift(counts.gr2,
+                                              junctions.sub.gr,
+                                              window = -last_bin)
+        }
+        if(swap == "junctions") {
+            junctions.sub.gr2 = junctions_gr %Q% (sample==rand.pair)
+            alift.pks.gr = gUtils::anchorlift(counts.gr,
+                                              junctions.sub.gr2,
+                                              window = -last_bin)
+        }
+        alift.pks.dt2 = as.data.table(alift.pks.gr)
+        alift.pks.dt2[,permute := "permute"]
+        alift.pks.dt = rbind(alift.pks.dt,alift.pks.dt2,fill=TRUE)
+        alift.pks.dt[,uniq := "not_unique"]
+        if(length(names(alift.pks.dt)) > 4) {
+            setDT(alift.pks.dt)
+            alift.pks.dt[, dis := ((start + end)/2)]
+            alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
+            if(annotate_closest) {
+                alift.pks.dt[, abs_bin := abs(bin)]
+                alift.pks.dt[, min_bin := min(abs_bin), by = "pos"]
+                alift.pks.dt[, min_bin_tf := ifelse(abs_bin == min_bin, TRUE, FALSE)]
+                ## alift.pks.dt[, min_bin_tf := ifelse(abs(bin) == min_bin, TRUE, FALSE)]
+            }
+            if(is.null(meta_keep)) {
+                alift.pks.dt = alift.pks.dt[,.(sample,permute,uniq,get(pval_column),bin)]
+                names(alift.pks.dt) = c("sample","permute","uniq",pval_column,"bin")
+            } else {
+                keep1 = c("sample","permute","uniq",pval_column,"bin",meta_keep)
+                alift.pks.dt = alift.pks.dt[,..keep1]
+            }
+            return(alift.pks.dt)
+        } else {return(NULL)}
+    }, mc.cores=mcores)
+}
+
+
 #create function that swaps peaks or swaps junctions for permutting peaks (normalized intensity y)
 alift_permute_peaks2 = function(random_pairs,bin_size,counts_file_col,rand_counts_file_col,junctions_gr,last_bin = -5e7,pval_column,padj_column,FDR_thresh = 0.25,swap = "peaks",mcores=1) {
     mclapply(setNames(nm = random_pairs$pair),function(pair) {
@@ -38,7 +117,7 @@ alift_permute_peaks2 = function(random_pairs,bin_size,counts_file_col,rand_count
         if(length(names(alift.pks.dt)) > 4) {
             setDT(alift.pks.dt)
             alift.pks.dt[, dis := ((start + end)/2)]
-            alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+            alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
             alift.pks.dt = alift.pks.dt[,.(sample,type,permute,uniq,get(pval_column),get(padj_column),bin,type_peak)]
             names(alift.pks.dt) = c("sample","type","permute","uniq",pval_column,padj_column,"bin","type_peak")
             return(alift.pks.dt)
@@ -82,7 +161,7 @@ alift_permute_lambda2 = function(random_pairs,bin_size,counts_file_col,rand_coun
         if(length(names(alift.pks.dt)) > 4) {
             setDT(alift.pks.dt)
             alift.pks.dt[, dis := ((start + end)/2)]
-            alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+            alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
             alift.pks.dt = alift.pks.dt[,.(sample,permute,uniq,get(pval_column),bin)]
             names(alift.pks.dt) = c("sample","permute","uniq",pval_column,"bin")
             return(alift.pks.dt)
@@ -108,11 +187,11 @@ get_breakends = function(complex, return.type = "data.table", verbose = FALSE) {
         values(junctions)[, "cn"] = gg$edges$dt[values(junctions)[, "edge.id"], cn]
         values(junctions)[, "jstring"] = rep(grl.string(gg$junctions[cn > 0 & class != "REF"]$grl),
                                              each = 2)
-                                        #add to breakend code to get class and span so I can filter on that
+        ##add to breakend code to get class and span so I can filter on that
         bp.dt = gg$junctions[type=="ALT" & cn > 0]$dt
         values(junctions)[,"SPAN"] = rep(bp.dt[rep(from %in% values(junctions)[, "node.id"] | to  %in% values(junctions)[, "node.id"],length=.N),SPAN],each=2) # adds the span for each junction to both of the +/- node edges involved
         values(junctions)[, "class"] = gg$edges$dt[values(junctions)[, "edge.id"], class]
-                                        #add the distance to the nearest junction that's not the same edge id
+        ##add the distance to the nearest junction that's not the same edge id
         junctions = lapply(unique(junctions$edge.id), function(edge_id) {
             junctions_sub = junctions %Q% (edge.id %in% edge_id)
             junctions_not_same_edge = junctions %Q% (edge.id != edge_id)
@@ -169,7 +248,7 @@ return(out)
 ##         if(length(names(alift.pks.dt)) > 4) {
 ##             setDT(alift.pks.dt)
 ##             alift.pks.dt[, dis := ((start + end)/2)]
-##             alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+##             alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
 ##             alift.pks.dt = alift.pks.dt[,.(sample,permute,uniq,get(pval_column),bin)]
 ##             names(alift.pks.dt) = c("sample","permute","uniq",pval_column,"bin")
 ##             return(alift.pks.dt)
@@ -203,7 +282,7 @@ alift_permute_lambda = function(random_pairs,bin_size,counts_file_col,junctions_
         if(length(names(alift.pks.dt)) > 4) {
             setDT(alift.pks.dt)
             alift.pks.dt[, dis := ((start + end)/2)]
-            alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+            alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
             alift.pks.dt = alift.pks.dt[,.(sample,type,permute,uniq,get(pval_column),bin)]
             names(alift.pks.dt) = c("sample","type","permute","uniq",pval_column,"bin")
             return(alift.pks.dt)
@@ -237,7 +316,7 @@ alift_permute_peaks = function(random_pairs,bin_size,counts_file_col,junctions_g
         if(length(names(alift.pks.dt)) > 4) {
             setDT(alift.pks.dt)
             alift.pks.dt[, dis := ((start + end)/2)]
-            alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+            alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
             alift.pks.dt = alift.pks.dt[,.(sample,type,permute,uniq,get(pval_column),bin,type_peak)]
             names(alift.pks.dt) = c("sample","type","permute","uniq",pval_column,"bin","type_peak")
             return(alift.pks.dt)
@@ -268,7 +347,7 @@ alift_permute_peaks = function(random_pairs,bin_size,counts_file_col,junctions_g
 ##         if(length(names(alift.pks.dt)) > 4) {
 ##             setDT(alift.pks.dt)
 ##             alift.pks.dt[, dis := ((start + end)/2)]
-##             alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+##             alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
 ##             alift.pks.dt = alift.pks.dt[,.(sample,type,permute,uniq,get(pval_column),bin)]
 ##             names(alift.pks.dt) = c("sample","type","permute","uniq",pval_column,"bin")
 ##             return(alift.pks.dt)
@@ -310,7 +389,7 @@ get_aggregate_permute = function(bins_list,anchor_lift_dt,normalized_distance=2e
 
 
                                         #add better ability to control y axis limits
-plot_junctions = function(plot_dt,x = "bin",y, color_by,save_file="plot.png",xlab="distance from junction",ylab = "normalized intensity",plot_title=NULL,y0 = NULL, y1 = NULL,res1=300,height1=3000,width1=4000) {
+plot_junctions = function(plot_dt,x = "bin",y, color_by,save_file="plot.png",xlab="distance from junction",ylab = "normalized intensity",plot_title=NULL,y0 = NULL, y1 = NULL, x0 = NULL, x1 = NULL, type = "png", ticks = NULL, res1=300,height1=3000,width1=4000) {
     if(is.null(y1)) {
         y1 = as.integer(max(with(plot_dt,get(y)))+1)
         if(y1 < 2) {
@@ -320,9 +399,15 @@ plot_junctions = function(plot_dt,x = "bin",y, color_by,save_file="plot.png",xla
     if(is.null(y0)) {
         y0 = 0
     }
+    if(is.null(x0)) {
+        x0 = min(plot_dt$bin)
+    }
+    if(is.null(x1)) {
+        x1 = max(plot_dt$bin)
+    }
     pt = ggplot(plot_dt, aes(x = get(x), y = get(y), color = get(color_by))) +
         geom_line() +
-        xlim(min(plot_dt$bin), max(plot_dt$bin)) +
+        xlim(x0, x1) +
         ylim(y0, y1) +
         ggpubr::theme_pubr() +
         labs(x = xlab, y = ylab) +
@@ -330,7 +415,18 @@ plot_junctions = function(plot_dt,x = "bin",y, color_by,save_file="plot.png",xla
         geom_vline(xintercept=0, linetype="dotted") +
         scale_color_discrete(name = color_by) +
         ggtitle(plot_title)
-    ppng(print(pt),file=save_file,res=res1,height=height1,width=width1)
+    if(!is.null(ticks)) {
+        pt = pt + scale_x_continuous(breaks = ticks)
+    }
+    if(type == "png") {
+        ppng(print(pt),file=save_file,res=res1,height=height1,width=width1)
+    } else if (type == "pdf") {
+        save_file = gsub(".png",".pdf",save_file)
+        if(height1 == 3000 & width1 == 4000) {
+            height1 = 10 ; width1 = 15
+        }
+        ppdf(print(pt),file=save_file,height=height1,width=width1)
+    }   
 }
 
 
@@ -391,7 +487,7 @@ plot_junctions = function(plot_dt,x = "bin",y, color_by,save_file="plot.png",xla
 ##         if(length(names(alift.pks.dt)) > 4) {
 ##             setDT(alift.pks.dt)
 ##             alift.pks.dt[, dis := ((start + end)/2)]
-##             alift.pks.dt[, bin := zitools:::easy.cut((start + end)/2, last_bin, step = bin_size)]
+##             alift.pks.dt[, bin := easy.cut((start + end)/2, last_bin, step = bin_size)]
 ##             alift.pks.dt = alift.pks.dt[,.(sample,type,permute,uniq,get(pval_column),bin,type_peak)]
 ##             names(alift.pks.dt) = c("sample","type","permute","uniq",pval_column,"bin","type_peak")
 ##             return(alift.pks.dt)

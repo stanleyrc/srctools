@@ -88,6 +88,7 @@ get_lambda = function(pvals) {
     pval.dt[, log.pval := -log10(pval)]
     pval.dt[, log.rank := -log10(rank)]
     lambda = lm(log.pval ~ log.rank - 1, pval.dt)$coefficients
+    return(lambda)
 }
 
 hg19_seq = function() {
@@ -214,6 +215,25 @@ load_dev = function() {
     library(skitools); devtools::load_all("~/git/GxG"); library(Flow) ; library(fishHook) ; library(rtracklayer) ; library(pbmcapply)
     setDTthreads(1)
 }
+
+#' @name easy.cut
+#' @title easy.cut
+#'
+#' @description
+#' wrapper around cut to save literally one line of code - copied from zitools
+#'
+#' @param x (numeric) vector of values
+#' @param start (numeric) lowest number to start at, default -1e3
+#' @param end (numeric) highest number to end at, default - start
+#' @param step (numeric) step size, default 100
+#'
+#' @return numeric vector with bin midpoints
+#' @export
+easy.cut = function(x, start = 1e3, end = -start, step = 1e2) {
+    y = cut(x, breaks = seq(start, end, by = step), labels = seq(start + step / 2, end - step / 2, by = step))
+    return(as.numeric(as.character(y)))
+}
+
 
 ## #Clean a model so I'm not saving all of the training data with it
 ## cleanModel1 = function(cm) {
