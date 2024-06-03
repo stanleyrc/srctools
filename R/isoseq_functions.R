@@ -183,6 +183,8 @@ get_iso_reads = function(bam,
                          potential_over_read = 0.8, #only applies to annotate_mismatch_type = "percent"
                          minimize = "tr_bases_missing", #only applies to annotate_mismatch_type = smart, typically works better then sum
                          annotate_missing = TRUE,
+                         remove_cigar_tags = c("S","D"),
+                         unique_reads = TRUE,
                          cores = 1) {
   message(paste0("Reading in ",bam))
   md.gr.bam = bamUtils::read.bam(bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
@@ -193,6 +195,9 @@ get_iso_reads = function(bam,
   message("Done reading")
   md.dt = as.data.table(md.gr.bam)
   md.dt = md.dt[width != 0,]
+  if(unique_reads) {
+    md.dt = unique(md.dt)
+  }
   md.gr = GRanges(md.dt,seqlengths = hg_seqlengths())
   message("Splicing cigar string")
   md.grl = bamUtils::splice.cigar(md.gr,get.seq = TRUE, rem.soft = FALSE)
@@ -209,15 +214,15 @@ get_iso_reads = function(bam,
   if(!reannotate) {
     ##look for collapsed_group and collapsed_class if missing
     if(is.null(collapsed_group) | is.null(collapsed_class)) {
-      if(is.null(collapsed_group) && is.null(collapsed_class)) {
-        message("looking for collapsed_group and collapsed class")
-        folder_find = tstrsplit(bam,"/") %>% .[1:(length(.)-1)] %>% paste0(., collapse = "/") %>% paste0(.,"/")
-        collapsed_group = paste0(folder_find,"collapsed.group.txt")
-        collapsed_class = paste0(folder_find,"collapsed_classification.txt")
-        if(all(file.exists(c(collapsed_group,collapsed_class)))) {
-          message("Found! collapsed.group.txt and collapsed_classification.txt")
+        if(is.null(collapsed_group) && is.null(collapsed_class)) {
+          message("looking for collapsed_group and collapsed class")
+          folder_find = tstrsplit(bam,"/") %>% .[1:(length(.)-1)] %>% paste0(., collapse = "/") %>% paste0(.,"/")
+          collapsed_group = paste0(folder_find,"collapsed.group.txt")
+          collapsed_class = paste0(folder_find,"collapsed_classification.txt")
+          if(all(file.exists(c(collapsed_group,collapsed_class)))) {
+            message("Found! collapsed.group.txt and collapsed_classification.txt")
+          }
         }
-      }
     }
     group.dt = fread(collapsed_group, col.names = c("isoform","transcripts"))
     class.dt = fread(collapsed_class)
@@ -632,7 +637,10 @@ get_iso_reads = function(bam,
     md.annotated.dt3[, coding_type_simple := lapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
                                                                                   ifelse("UTR" %in% x, "UTR",
                                                                                   ifelse("exon" %in% x, "exon","intron"))))]
-    md.annotated.dt3 = md.annotated.dt3[type != "N",]
+
+    ## md.annotated.dt3 = md.annotated.dt3[type != "N",]
+    md.annotated.dt3 = md.annotated.dt3[!(type %in% remove_cigar_tags),]
+    ## md.annotated.dt3 = md.annotated.dt3[type != "N",]
     md.annotated.dt3[type == "X",coding_type_simple := "del"]
     md.all.dt = md.annotated.dt3
     message("finished merging together")
@@ -666,7 +674,13 @@ get_iso_reads = function(bam,
         ##attempt not using outside
         tiled.gr = gr.tile(tr.gr,width = 1)
         tiled.gr$overlap = tiled.gr %O% md.sub.tr
-        tr.missing.gr = (tiled.gr %Q% (overlap < 1)) %>% gr.reduce
+        ## tr.missing.gr = (tiled.gr %Q% (overlap < 1)) %>% gr.reduce
+        tr.missing.gr = (tiled.gr %Q% (overlap < 1))
+        ## add annotation for exon from tr.missing!
+        tr.missing.gr = gr.val(tr.missing.gr,tr.gr, c("exon_id","exon_number"))
+        tr.missing.gr = gr.reduce(tr.missing.gr,by = c("exon_id"))
+        ## tr.gr$type = as.character(tr.gr$type)
+        ##
         if(length(tr.missing.gr) == 0) {
           return(as.data.table(md.sub.tr))
         }
@@ -681,7 +695,12 @@ get_iso_reads = function(bam,
           meta.add.dt = meta.add.dt[,.(transcript_id, qname, gene_name, reannotated, transcript_type, transcript_name, qr_tr)]
         }
         tr.missing.gr = unique(tr.missing.gr)
+        ## save exon ids and number to add to meta data
+        exon_ids = tr.missing.gr$exon_id
+        exon_number = tr.missing.gr$exon_id
         mcols(tr.missing.gr) = meta.add.dt
+        tr.missing.gr$exon_ids = exon_ids
+        tr.missing.gr$exon_number = exon_number
         ##
         strand_gene = md.sub.tr@strand@values
         tr.missing.gr@strand@values = strand_gene
@@ -695,6 +714,72 @@ get_iso_reads = function(bam,
         return(rbind(pos.dt,neg.dt))
       }, mc.cores = cores)
       md.all.dt2 = rbindlist(md.all.dt2, fill = TRUE)
+      ## add intron labels
+      message("adding labels for retained introns")
+      md.all.dt2[, id_coord := 1:.N]
+      sub.intron.dt = md.all.dt2[unlist(coding_type_simple) == "intron",]
+      ## sub.intron.dt[qname %in% c("transcript/583727","transcript/598795"),]
+      ## add labels for each intron by each transcript
+      tr.dt = potential.gtf.dt[transcript_id %in% unique(sub.intron.dt$transcript_id),]
+      tr.gr = tr.dt[type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
+      ## just make the data.table with transcript introns and exons before adding it to the reads
+      tr.intron.lst = mclapply(unique(tr.dt$transcript_id), function(x) {
+        full.tr.gr = tr.dt[transcript_id == x & type == "transcript",] %>% GRanges(., seqlengths = hg_seqlengths())
+        parts.tr.gr = tr.dt[transcript_id == x & type != "transcript",] %>% GRanges(., seqlengths = hg_seqlengths())
+        tile.gr = gr.tile(full.tr.gr, 1)
+        tile.gr = gr.val(tile.gr,parts.tr.gr, c("exon_id","exon_number"))
+        tile.gr = gr.reduce(tile.gr, by = "exon_number",ignore.strand = FALSE) %>% sort
+        tile.dt = as.data.table(tile.gr)
+        if(tile.dt$strand[1] == "-") {
+          tile.dt = tile.dt[order(-start),]
+          tile.dt[exon_number == "", intron_number := 1:.N]
+        } else if (tile.dt$strand[1] == "+") {
+          tile.dt = tile.dt[order(start),]
+          tile.dt[exon_number == "", intron_number := 1:.N]
+        }
+        tile.dt[, transcript_id := x]
+        return(tile.dt)
+      }, mc.cores = cores)
+      tr.intron.dt = rbindlist(tr.intron.lst)
+      tr.intron.gr = GRanges(tr.intron.dt, seqlengths = hg_seqlengths())
+      ## add transcript labels to the reads
+      sub.intron.lst = mclapply(unique(md.all.dt2$qname), function(x) {
+        sub.gr = md.all.dt2[qname == x,] %>% GRanges(., seqlengths = hg_seqlengths())
+        sub.tr.gr = tr.intron.dt[transcript_id == sub.gr$transcript_id[1],] %>% GRanges(., seqlengths = hg_seqlengths())
+        sub.gr = gr.val(sub.gr, sub.tr.gr, "intron_number")
+        ## add all unique missing exon and retained intron numbers
+        unique.missing.exon.numbers = unique(na.omit(sub.gr$exon_number))
+        if(length(unique.missing.exon.numbers) == 0) {
+          unique.missing.exon.numbers = NA
+        }
+        unique.retained.intron.numbers = unique(na.omit(sub.gr$intron_number))
+        if(length(unique.retained.intron.numbers) == 0) {
+          unique.retained.intron.numbers = NA
+        }
+        sub.gr$missing_exons = paste0(unique.missing.exon.numbers, collapse = ",")
+        sub.gr$retained_introns = paste0(unique.retained.intron.numbers, collapse = ",")
+        ## fix labels where extended UTR is called UTR
+        whole_transcript.gr = sub.tr.gr %>% gr.reduce
+        whole_transcript.gr$range = "in_gene"
+        sub.gr = gr.val(sub.gr, whole_transcript.gr, "range")
+        sub.dt = as.data.table(sub.gr)
+        sub.dt[range == "" & coding_type_simple == "intron", coding_type_simple := "UTR_long"]
+        sub.dt[, range := NULL]
+        ## add footprint for whole read (not including "missing") and whole read without strictness of UTR
+        whole.fp = GRanges(sub.dt[coding_type_simple != "missing",]) %>% gr.nochr %>% gr.string %>% paste0(.,collapse = ",")
+        ## sub.fp = GRanges(sub.dt[coding_type_simple != "missing" & coding_type_simple != "UTR",]) %>% gr.nochr %>% gr.string %>% paste0(.,collapse = ",")
+        sub.fp = GRanges(sub.dt[coding_type_simple != "missing" & coding_type_simple != "UTR" & coding_type_simple != "UTR_long",]) %>% gr.nochr %>% gr.string %>% paste0(.,collapse = ",")
+        ## whole.fp = GRanges(sub.dt[coding_type_simple != "missing",]) %>% gr.nochr %>% gr.string
+        ## sub.fp = GRanges(sub.dt[coding_type_simple != "missing" & coding_type_simple != "UTR",]) %>% gr.nochr %>% gr.string
+        sub.dt[, footprint := list(whole.fp)]
+        sub.dt[, footprint_minus_UTR := list(sub.fp)]
+        return(sub.dt)
+      }, mc.cores = cores)
+      md.all.dt2 = rbindlist(sub.intron.lst)
+      pos.dt = md.all.dt2[strand == "+" | strand == "*",][order(seqnames,start,end),]
+      neg.dt = md.all.dt2[strand == "-" | strand == "*",][order(seqnames,-start,-end),]
+      md.all.dt2 = rbind(pos.dt, neg.dt)
+      ##
     } else {
       md.all.dt2 = md.grl2 %>% unlist %>% as.data.table
     }
@@ -711,7 +796,7 @@ get_iso_reads = function(bam,
     message("type is 'gw' converting grl to gW object")
     md.gw = gW(grl = md.grl3)
     ## add coloring of nodes to match track.gencode
-    cmap.dt = data.table(category = c("exon", "intron", "start_codon", "stop_codon", "UTR", "del", "missing"), color = c("#0000FF99", "#FF0000B3", "green", "red", "#A020F066", "orange", "orange"))
+    cmap.dt = data.table(category = c("exon", "intron", "start_codon", "stop_codon", "UTR", "UTR_long","del", "missing"), color = c("#0000FF99", "#FF0000B3", "green", "red", "#A020F066", "red", "orange", "orange"))
     for(x in 1:nrow(cmap.dt)) {
       cmap.sub = cmap.dt[x,]
       md.gw$nodes[coding_type_simple == cmap.sub$category]$mark(col = cmap.sub$color)
