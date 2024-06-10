@@ -169,7 +169,8 @@ get_iso_reads = function(bam,
                          gr,
                          gtf,
                          collapsed_group = NULL, #pacbio pigeon annotation output, if reannotate = FALSE and this, will look for 
-                         collapsed_class = NULL, #pacbio pigeon annotation output, if reannotate = FALSE and this, will look for 
+                         collapsed_class = NULL, #pacbio pigeon annotation output, if reannotate = FALSE and this, will look for
+                         read_assignments = NULL, # isoquant read assignements output, if reannotate = FALSE and this, will look for
                          type = "gw",
                          annotate_mismatch = TRUE,
                          annotate_mismatch_type = "smart",
@@ -185,6 +186,8 @@ get_iso_reads = function(bam,
                          annotate_missing = TRUE,
                          remove_cigar_tags = c("S","D"),
                          unique_reads = TRUE,
+                         subset_qname = NULL, #reads to subset on
+                         pipeline = "isoquant",
                          cores = 1) {
   message(paste0("Reading in ",bam))
   md.gr.bam = bamUtils::read.bam(bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
@@ -198,6 +201,10 @@ get_iso_reads = function(bam,
   if(unique_reads) {
     md.dt = unique(md.dt)
   }
+  if(!is.null(subset_qname)) {
+    md.dt = md.dt[qname %in% subset_qname,]
+  }
+  
   md.gr = GRanges(md.dt,seqlengths = hg_seqlengths())
   message("Splicing cigar string")
   md.grl = bamUtils::splice.cigar(md.gr,get.seq = TRUE, rem.soft = FALSE)
@@ -211,7 +218,7 @@ get_iso_reads = function(bam,
   ## if(exists("potential_transcript_merge")) {
   potential_transcript_merge = NULL
   ## }
-  if(!reannotate) {
+  if(!reannotate & pipeline == "pacbio") {
     ##look for collapsed_group and collapsed_class if missing
     if(is.null(collapsed_group) | is.null(collapsed_class)) {
         if(is.null(collapsed_group) && is.null(collapsed_class)) {
@@ -241,21 +248,59 @@ get_iso_reads = function(bam,
       md.dt3 = group.sub.dt2
     }
     
+  } else if ((!reannotate & pipeline == "isoquant")) {
+    if(is.null(read_assignments)) {
+      message("looking for read assignments")
+      folder_find = tstrsplit(bam,"/") %>% .[1:(length(.)-2)] %>% paste0(., collapse = "/") %>% paste0(.,"/")
+      read_assignments = paste0(folder_find,"OUT.read_assignments.tsv.gz")
+      if(file.exists(read_assignments)) {
+        message("Found! OUT.read_assignments.tsv.gz")
+      }
+    }
+    reads.dt = fread(read_assignments)
+    ## very slow reads.dt = read.delim(read_assignments, header = TRUE, comment.char = "#")
+    names(reads.dt) = gsub("#","",reads.dt[1,])
+    reads.dt = reads.dt[2:nrow(reads.dt),]
+    reads.dt = reads.dt[read_id %in% md.dt$qname,]
+    names(reads.dt) = c("qname", "chr", "strand", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info")
+    reads.dt[, structural_category := tstrsplit(additional_info, "; Classification=", keep = 2)]
+    reads.dt[, structural_category := gsub(";","", structural_category)]
+    names(reads.dt)[names(reads.dt) == "strand"] = "strand_classification"
+    names(reads.dt)[names(reads.dt) == "chr"] = "chr_classification"
+    ##add transcript labels to bam reads
+    md.dt2 = unlist(md.grl) %>% as.data.table()
+    if(nrow(md.dt2) > 0) { ## necessary for fusions where md.dt2 is probably empty
+      md.dt3 = merge.data.table(md.dt2, reads.dt, by = "qname", all = TRUE)[type != "N",]
+    } else {
+      md.dt3 = reads.dt
+    }
   } else if(reannotate) {
+    ## cols_keep = c("qname", "seqnames", "start", "end", "width", "strand", "type")
+    ## cols_keep = cols_keep[cols_keep %in% names(md.dt3)]
     md.dt3 = as.data.table(unlist(md.grl))[,.(qname,seqnames,start,end,width,strand,type)][type != "N",]
   }
   if(annotate_mismatch) {
     if(!reannotate) {
-      md.full = md.dt3[structural_category == "full-splice_match",]
-      md.sub = md.dt3[structural_category != "full-splice_match" & associated_transcript != "novel"]
-      md.novel = md.dt3[structural_category != "full-splice_match" & associated_transcript == "novel"]
+      if("associated_transcript" %in% names(md.dt3)) { ## for pipeline == "pacbio")
+        md.full = md.dt3[structural_category == "full-splice_match" | structural_category == "full_splice_match",]
+        md.sub = md.dt3[structural_category != "full-splice_match" & associated_transcript != "novel"]
+        md.novel = md.dt3[structural_category != "full-splice_match" & associated_transcript == "novel"]
+      } else {
+        md.full = md.dt3[structural_category == "full-splice_match" | structural_category == "full_splice_match",]
+        md.sub = md.dt3[!(structural_category == "full-splice_match"| structural_category == "full_splice_match")]
+        md.novel = md.dt3[structural_category != "full-splice_match" & is.null(transcript_id)]
+      }
     } else if(reannotate) {
       md.novel = md.dt3
       md.full = NULL
     }
 ###################################
     ## first  label ones without a transcript annotation
-    md.novel.gr = GRanges(md.novel)
+    if(nrow(md.novel) == 0) {
+      md.novel.gr = GRanges()
+      } else {
+        md.novel.gr = GRanges(md.novel)
+      }
     if(class(gtf) == "character") {
       message(paste0("Reading in ",gtf)) 
       gtf = rtracklayer::readGFF(gtf) %>% as.data.table
@@ -588,56 +633,232 @@ get_iso_reads = function(bam,
     } else {
       gtf.possible.tr.dt = as.data.table(gtf.gr)[transcript_id %in% md.full$associated_transcript | transcript_id %in% md.sub$associated_transcript, .(gene_name, transcript_id)] %>% unique
       md.annotated = rbind(md.full,md.sub)
-      md.annotated = merge.data.table(md.annotated, gtf.possible.tr.dt, by.x = "associated_transcript",by.y = "transcript_id",all.x = TRUE)
-      md.annotated[, transcript_id := associated_transcript]
-      md.annotated[, reannotated := FALSE]
+      if(nrow(gtf.possible.tr.dt) > 0) {
+        md.annotated = merge.data.table(md.annotated, gtf.possible.tr.dt, by.x = "associated_transcript",by.y = "transcript_id",all.x = TRUE)
+        md.annotated[, transcript_id := associated_transcript]
+        md.annotated[, reannotated := FALSE]
+      } else {
+      }
     }
+    ## md.annotated[seqnames != chr,] ## duplicate seqnames column
     md.annotated.gr = GRanges(md.annotated,seqlengths = hg_seqlengths())
-    potential_genes = md.annotated.gr$gene_name  %>% unique %>% strsplit(., ",") %>% unlist %>% gsub(" ","",.) %>% unique
-    potential.gtf.gr = gtf.gr %Q% (gene_name %in% potential_genes)
-    potential.gtf.dt = as.data.table(potential.gtf.gr)
-    
-    add.potential.ts = potential.gtf.dt[transcript_id %in% md.annotated$transcript_id,.(gene_name,transcript_id)] %>% unique
+    if(pipeline == "pacbio") {
+      potential_genes = md.annotated.gr$gene_name  %>% unique %>% strsplit(., ",") %>% unlist %>% gsub(" ","",.) %>% unique
+      potential.gtf.gr = gtf.gr %Q% (gene_name %in% potential_genes)
+      potential.gtf.dt = as.data.table(potential.gtf.gr)
+      add.potential.ts = potential.gtf.dt[transcript_id %in% md.annotated$transcript_id,.(gene_name,transcript_id)] %>% unique
+    } else {
+      potential.gtf.gr = gtf.gr %Q% (transcript_id %in% md.annotated.gr$transcript_id)
+      potential.gtf.dt = as.data.table(potential.gtf.gr)
+    }
     md.annotated.dt2 = md.annotated
+    md.annotated.dt2 = md.annotated.dt2[!(type %in% remove_cigar_tags),]
     md.annotated.dt2[is.na(transcript_id), transcript_id := "multiple_potential_genes"]
     ## now annotation the exons overlaps
     md_potential_tr.gr = GRanges(md.annotated.dt2[transcript_id != "multiple_potential_genes",], seqlengths = hg_seqlengths()) ## subset to ones attempting to annotate
     potential.gtf.labels = potential.gtf.dt[transcript_id %in% unique(md_potential_tr.gr$transcript_id) & type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
     potential.gtf.labels$coding_type = as.character(potential.gtf.labels$type)
     potential.transcripts = potential.gtf.labels$transcript_id %>% unique
-    md.annotated.lst3 = lapply(potential.transcripts, function(tr) {
+    message("breaking reads to label each element based on reference transcripts")
+    md.annotated.lst3 = mclapply(potential.transcripts, function(tr) {
       md_potential_tr.sub.gr = md_potential_tr.gr %Q% (transcript_id == tr)
+      ## md_potential_tr.sub.gr = md_potential_tr.gr %Q% (qname == "m64466e_230629_174835/100076360/ccs")
       potential.gtf.labels.sub = potential.gtf.labels %Q% (transcript_id == tr)
+      potential.gtf.labels.sub = potential.gtf.labels.sub %Q% (coding_type %in% c("CDS","UTR"))
       ##breaks isn't working properly-convert these to breakpoints
-      potential.gtf.labels.sub.dt = as.data.table(potential.gtf.labels.sub)[,.(seqnames,start,end,strand)]
+      potential.gtf.labels.sub.dt = as.data.table(potential.gtf.labels.sub)[,.(seqnames,start,end,strand, coding_type)]
       ##test end + 1 for pos
       bps.dt = data.table(seqnames = c(potential.gtf.labels.sub.dt$seqnames, potential.gtf.labels.sub.dt$seqnames), end = c(potential.gtf.labels.sub.dt$start,potential.gtf.labels.sub.dt$end), strand = as.character(potential.gtf.labels.sub.dt$strand, potential.gtf.labels.sub.dt$strand), start_end = c(rep("start",nrow(potential.gtf.labels.sub.dt)),rep("end",nrow(potential.gtf.labels.sub.dt)))) %>% unique
+##      bps.dt = copy(potential.gtf.labels.sub.dt)
       bps.dt[,start := end -1]
       bps.dt[start_end == "start", end := end - 1]
       bps.dt[start_end == "start", start := start - 1]
-      bps.dt[start_end == "end", end := end + 1]
+      bps.dt[start_end == "end", end := end]
       bps.dt[start_end == "end", start := start + 1]
-      ##test labels
-      ## bps.dt[,start := start + 1]
-      ## bps.dt[,end := start]
-      ##
+      ## ## ##test labels
+      ## ## ## bps.dt[,start := start + 1]
+      ## ## ## bps.dt[,end := start]
+      ## ## ##
+      ## bps.dt[,start_end := NULL]
+      ## bps.dt = unique(bps.dt)
+      ## bps.dt[,strand := NULL]
+      ## ## ## test no end
+      ## bps.dt[, end := end]
+      ## bps.dt[, start := end]
+      ## bps.dt[,start_end := NULL]
+      ## bps.dt = unique(bps.dt)
       bps.gr = GRanges(bps.dt[order(start)], seqlengths = hg_seqlengths(chr = FALSE)) %>% gr.chr
-      
+      ## #################################################################################### 6-5-24
+      ## ## new attempt at fixing breakpoints- don't have coding sequence overlap - exon should not overlap UTR
+      ## ## gene transcript exon CDS start_codon stop_codon UTR
+
+
+      ## potential.gtf.labels.sub$orig_order = 1:length(potential.gtf.labels.sub)
+      ## ## granges for each type of the gene
+      ## exon.gr = potential.gtf.labels.sub %Q% (type == "exon")
+      ## transcript.gr = potential.gtf.labels.sub %Q% (type == "transcript")
+      ## CDS.gr = potential.gtf.labels.sub %Q% (type == "CDS")
+      ## start_codon.gr = potential.gtf.labels.sub %Q% (type == "start_codon")
+      ## stop_codon.gr = potential.gtf.labels.sub %Q% (type == "stop_codon")
+
+      ## potential.gtf.labels.sub
+      ## tiled.gr = gr.tile(potential.gtf.labels.sub,1)
+      ## tiled.gr = gr.val(tiled.gr,potential.gtf.labels.sub, "coding_type", mean = FALSE)
+      ## tiled.dt = as.data.table(tiled.gr)
+      ## tiled.dt[,coding_type_vect := lapply(coding_type, function(x) unlist(strsplit(x, ", ")))]
+      ## tiled.dt[, coding_type_simple := sapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
+      ##                                                                              ifelse("stop_codon" %in% x, "stop_codon",
+      ##                                                                               ifelse("UTR" %in% x, "UTR",
+      ##                                                                               ifelse("exon" %in% x, "exon","intron")))))]
+      ## tiled.gr2 = GRanges(tiled.dt, seqlengths = hg_seqlengths())
+      ## bps.gr = gr.reduce(tiled.gr2, by = c("coding_type_simple"))
+      ## bps.gr$coding_type = bps.gr$coding_type_simple
+      ## test.gr = potential.gtf.labels.sub %Q% (coding_type %in% c("CDS","UTR"))
+      ## test.gt = gTrack(potential.gtf.labels.sub,gr.colorfield = "type")
+      ## test.gt2 = gTrack(test.gr,gr.colorfield = "type")
+      ## test.gt2 = gTrack(potential.gtf.labels.sub,gr.colorfield = "coding_type")
+      ## test.gt3 = gTrack(tiled.gr3,gr.colorfield = "coding_type_simple")
+      ## test.gt4 = gTrack(bps.gr2)
+      ## ppng(plot(c(test.gt,test.gt2), gene.gr),height = 6000, width = 4000, res = 300)
+      ## ppng(plot(c(test.gt,test.gt2,test.gt3), gene.gr),height = 6000, width = 4000, res = 300)
+      ## ppng(plot(c(test.gt,test.gt2,test.gt3, test.gt4), gr.reduce(bps.gr2+5)),height = 6000, width = 4000, res = 300)
+
+
+
+
+      ## bps.dt = as.data.table(bps.gr)[order(start),]
+      ## bps.dt2 = data.table(seqnames = unique(bps.dt$seqnames), start = c((bps.dt$start[1]-1),bps.dt$end), end = c((bps.dt$start[1]),bps.dt$start[2:nrow(bps.dt)],(bps.dt$end[nrow(bps.dt)]+1)))
+
+      ## bps.dt2 = data.table(seqnames = unique(bps.dt$seqnames), start = c((bps.dt$start -2)))
+      ## bps.dt2[,end := start]
+
+
+
+      ## bps.dt = as.data.table(sort(bps.gr))
+      ## bps.dt2 = data.table(seqnames = unique(bps.dt$seqnames), start = c((bps.dt$start[1]-1),bps.dt$end), end = c((bps.dt$start[1]),bps.dt$start[2:nrow(bps.dt)],(bps.dt$end[nrow(bps.dt)]+1)))
+      ## test.dt = bps.dt[coding_type_simple == "exon",]
+      ## test.dt$start[1] = test.dt$end[1]
+      ## test.dt$end[7] = test.dt$start[7]
+      ## test.dt2 = bps.dt[coding_type_simple != "exon",]
+      ## test.dt2 = data.table(seqnames = "chr12", start = c(57747727, 57748524,57748527,57751714,57751717,57751736,57752310))
+      ## test.dt2[, end := start]
+      ## test.gr = GRanges(rbind(test.dt,test.dt2,fill = TRUE),seqlengths = hg_seqlengths())
+
+##      bps.dt = data.table(seqnames = c(bps.dt$seqnames, bps.dt$seqnames), end = c(bps.dt$start,bps.dt$end), strand = as.character(bps.dt$strand, bps.dt$strand), start_end = c(rep("start",nrow(bps.dt)),rep("end",nrow(bps.dt)))) %>% unique
+      bps.dt = copy(potential.gtf.labels.sub.dt)
+      bps.dt = data.table(seqnames = rep(bps.dt$seqnames,2), end = c(bps.dt$start,bps.dt$end), strand = as.character(bps.dt$strand, bps.dt$strand), start_end = c(rep("start",nrow(bps.dt)),rep("end",nrow(bps.dt)))) %>% unique
+      bps.dt[, start := end]
+      bps.gr2 = GRanges(bps.dt, seqlengths = hg_seqlengths())
+      md_potential_tr.sub.gr = gr.chr(md_potential_tr.sub.gr)
       ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = potential.gtf.labels.sub,md_potential_tr.sub.gr)
-      md_potential_tr.gr2 = gUtils::gr.breaks(bp = bps.gr,md_potential_tr.sub.gr)
-      ## new gr.val to match to specific transcripts
-      md_potential_tr.gr2 = gr.val(md_potential_tr.gr2,potential.gtf.labels.sub,"coding_type")
-      md.novel.dt3 = as.data.table(md_potential_tr.gr2)
+      md_potential_tr.gr2 = gUtils::gr.breaks(bp = bps.gr2,query = md_potential_tr.sub.gr)
+      ## ## think I need to do the breaks for each individual qname because gr.breaks is not working for all at once
+      potential.gtf.labels.sub.gr = GRanges(potential.gtf.labels.sub.dt, seqlengths = hg_seqlengths(chr = TRUE))
+      md.novel.lst3 = mclapply(unique(md_potential_tr.gr$qname), function(x) {
+        ## tr.sub.gr = md_potential_tr.gr %Q% (qname == x)
+        tr.sub.gr = md_potential_tr.sub.gr %Q% (qname == x)
+        ##tr.sub.gr2 = gUtils::gr.breaks(bp = bps.gr2,tr.sub.gr)
+        tr.sub.gr2 = gUtils::gr.breaks(bps = potential.gtf.labels.sub.gr,query = tr.sub.gr)
+        tr.sub.gr2 = gr.val(tr.sub.gr2,potential.gtf.labels.sub,"coding_type")
+        return(as.data.table(tr.sub.gr2))
+      }, mc.cores = cores)
+      ##md_potential_tr.sub.gr = gr.val(md_potential_tr.gr2,potential.gtf.labels.sub,"coding_type")
+      ## md_potential_tr.sub.gr = gr.val(md_potential_tr.sub.gr,bps.gr,"coding_type")
+      ##md.novel.dt3 = as.data.table(md_potential_tr.sub.gr)
+      md.novel.dt3 = rbindlist(md.novel.lst3)
       return(md.novel.dt3)
-    })
-    md.annotated.dt3 = rbindlist(md.annotated.lst3)  
+####################################################################################################################################################################################################################################################################################
+      ## fix bps.dt
+      ## do not use first CDS end as breakpoint
+##      if(potential.gtf.labels.sub.dt$strand[1] == "-") {
+      ##        potential.gtf.labels.sub.dt = potential.gtf.labels.sub.dt[order(-start),]
+      ## bps.dt = potential.gtf.labels.sub.dt[coding_type != "exon",]
+      ## bps.dt[, coding_type_entry := 1:.N, by = "coding_type"]
+      
+      ## bps.dt = data.table(seqnames = c(bps.dt$seqnames, bps.dt$seqnames), start = c(bps.dt$start, bps.dt$end))
+      ## bps.dt[, end := start,]
+      ## bps.dt = unique(bps.dt)
+      ## bps.gr = GRanges(bps.dt[order(start)], seqlengths = hg_seqlengths(chr = FALSE)) %>% gr.chr
+      ## ## starts = potential.gtf.labels.sub.dt$start
+      ## ## end = potential.gtf.labels.sub.dt$start
+      ## ## } else {
+      ## ##   potential.gtf.labels.sub.dt = potential.gtf.labels.sub.dt[order(start),]
+      ## ## }
+
+      ## bps.dt = data.table(seqnames = c(potential.gtf.labels.sub.dt$seqnames, potential.gtf.labels.sub.dt$seqnames), end = c(potential.gtf.labels.sub.dt$start,potential.gtf.labels.sub.dt$end), strand = as.character(potential.gtf.labels.sub.dt$strand, potential.gtf.labels.sub.dt$strand), start_end = c(rep("start",nrow(potential.gtf.labels.sub.dt)),rep("end",nrow(potential.gtf.labels.sub.dt))), type = )
+####################################################################################################################################################################################################################################################################################
+      ## md_potential_tr.sub.gr = gUtils::gr.breaks(bp = bps.gr2,md_potential_tr.sub.gr)
+      ## new gr.val to match to specific transcripts
+      ## potential.gtf.labels.sub = potential.gtf.labels.sub %+% 1 #Have to add one to the coordinates when doing gr.val here
+
+
+      ## ############### newer commented out
+      ## potential.gtf.labels.sub = sort(potential.gtf.labels.sub)
+      ## ##sort((md_potential_tr.sub.gr %Q% (qname == "m64466e_230629_174835/109120158/ccs")) %&% (potential.gtf.labels.sub[9]))
+      ## ##sort((md_potential_tr.sub.gr %Q% (qname == "m64466e_230629_174835/109120158/ccs")) %&% (bps.gr[15:16]))
+      ## ## (md_potential_tr.sub.gr %Q% (qname == "m64466e_230629_174835/109120158/ccs")) %&% (potential.gtf.labels.sub[2:5])
+      ## ## (potential.gtf.labels.sub[8:9])
+      ## md_potential_tr.sub.gr = sort(md_potential_tr.sub.gr)
+      ## md_potential_tr.sub.gr = gUtils::gr.breaks(bp = bps.gr,md_potential_tr.sub.gr)
+      ## md_potential_tr.sub.gr = gUtils::gr.breaks(bp = (potential.gtf.labels.sub %Q% (coding_type == "UTR")),md_potential_tr.sub.gr)
+      ## md_potential_tr.sub.gr = gUtils::gr.breaks(bp = (potential.gtf.labels.sub %Q% (coding_type == "CDS")),md_potential_tr.sub.gr)
+
+      ## md_potential_tr.sub.gr = gUtils::gr.breaks(bp = (potential.gtf.labels.sub[8:9]),md_potential_tr.sub.gr)
+      
+
+      ## md_potential_tr.sub.gr = gr.val(md_potential_tr.sub.gr,potential.gtf.labels.sub,"coding_type")
+      ## ## md_potential_tr.sub.gr = gr.val(md_potential_tr.sub.gr,bps.gr,"coding_type")
+      ## md.novel.dt3 = as.data.table(md_potential_tr.sub.gr)
+
+      ## end new commented out
+######################################################################################################################################################################################################################################
+      ## ## new attempt at these breaks-think the reason it does not break is that CDS overlaps stop_codon/ start_codon
+      ## bps.no.st.gr = bps.gr %Q% (!type %in% c("start_codon","stop_codon"))
+      ## bps.st.gr = bps.gr %Q% (type %in% c("start_codon","stop_codon"))
+      ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = bps.no.st.gr,md_potential_tr.sub.gr)
+      ## potential.gtf.labels.sub$orig_order = 1:length(potential.gtf.labels.sub)
+      ## potential.gtf.labels.sub.no.st = potential.gtf.labels.sub %Q% (!type %in% c("start_codon","stop_codon"))
+      ## potential.gtf.labels.sub.st = potential.gtf.labels.sub %Q% (type %in% c("start_codon","stop_codon"))
+      ## md_potential_tr.gr2 = gr.val(md_potential_tr.gr2,potential.gtf.labels.sub.no.st,"coding_type")
+
+      ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = bps.no.st.gr,md_potential_tr.gr2)
+      ## potential.gtf.labels.sub.st$coding_type_st = potential.gtf.labels.sub.st$coding_type
+      ## md_potential_tr.gr2 = gr.val(md_potential_tr.gr2,potential.gtf.labels.sub.st,"coding_type_st")
+
+      
+      ## cds_utr.gr = potential.gtf.labels.sub %Q% (!type %in% c("start_codon","stop_codon"))
+      ## ## st.gr = potential.gtf.labels.sub %Q% (type %in% c("start_codon","stop_codon"))
+
+      
+      ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = bps.gr,md_potential_tr.sub.gr)
+      ## ## new gr.val to match to specific transcripts
+      ## md_potential_tr.gr2 = gr.val(md_potential_tr.gr2,potential.gtf.labels.sub,"coding_type")
+      ## md.novel.dt3 = as.data.table(md_potential_tr.gr2)
+      ## potential.gtf.labels.sub.dt = as.data.table(potential.gtf.labels.sub)
+      ## potential.gtf.labels.sub.dt[, og_order := 1:.N]
+      ## potential.gtf.labels.sub = GRanges(potential.gtf.labels.sub.dt, seqlengths = hg_seqlengths())
+      ## cds_utr.gr = potential.gtf.labels.sub %Q% (!type %in% c("start_codon","stop_codon"))
+      ## st.gr = potential.gtf.labels.sub %Q% (type %in% c("start_codon","stop_codon"))
+      ## gr.breaks(query = cds_utr.gr, bp = st.gr)
+      ## ## cds_utr.gr2 = cds_utr.gr[cds_utr.gr %outside% st.gr]
+      ## bp.gr = c(cds_utr.gr2,st.gr)
+      ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = potential.gtf.labels.sub, md_potential_tr.sub.gr)
+      ## ## new gr.val to match to specific transcripts
+      ## md_potential_tr.gr2 = gr.val(md_potential_tr.gr2,potential.gtf.labels.sub,"coding_type")
+      ## md.novel.dt3 = as.data.table(md_potential_tr.gr2)
+      ## return(md.novel.dt3)
+    }, mc.cores = 1)
+    md.annotated.dt3 = rbindlist(md.annotated.lst3)
     md.annotated.dt3[, coding_type_vect := lapply(coding_type, function(x) unlist(strsplit(x, ", ")))]
 ################
     md.annotated.dt3[, coding_type_vect := lapply(coding_type, function(x) unlist(strsplit(x, ", ")))]
+    ## md.annotated.dt3[, coding_type_simple := lapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
+    ##                                                                               ifelse("UTR" %in% x, "UTR",
+    ##                                                                               ifelse("exon" %in% x, "exon","intron"))))]
     md.annotated.dt3[, coding_type_simple := lapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
                                                                                   ifelse("UTR" %in% x, "UTR",
-                                                                                  ifelse("exon" %in% x, "exon","intron"))))]
-
+                                                                                  ifelse("exon" %in% x, "exon",
+                                                                                  ifelse("CDS" %in% x, "exon","intron")))))]
     ## md.annotated.dt3 = md.annotated.dt3[type != "N",]
     md.annotated.dt3 = md.annotated.dt3[!(type %in% remove_cigar_tags),]
     ## md.annotated.dt3 = md.annotated.dt3[type != "N",]
@@ -668,7 +889,21 @@ get_iso_reads = function(bam,
         md.sub.tr = md.grl2[[x]]
         qr_tr1 = md.sub.tr$qr_tr[1]
         qname_tr1 = md.sub.tr$qname[1]
-        tr.gr = potential.gtf.dt[transcript_id == unique(md.sub.tr$transcript_id),][type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
+        uniq.tr = unique(md.sub.tr$transcript_id)
+        if(length(uniq.tr) == 1) {
+          tr.gr = potential.gtf.dt[transcript_id == uniq.tr,][type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
+        } else {
+          ## pick the longest if ambiguous
+          uniq.lst = lapply(1:length(uniq.tr), function(x) {
+            uniq.tr1 = uniq.tr[x]
+            tr.gr = potential.gtf.dt[transcript_id == uniq.tr1,][type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
+            return(data.table(entry = x, tr = uniq.tr1, length = sum(tr.gr@ranges@width)))
+          })
+          uniq.dt = rbindlist(uniq.lst)[order(-length),]
+          tr1 = uniq.dt$tr[1]
+          tr.gr = potential.gtf.dt[transcript_id == tr1,][type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
+        }
+        ## tr.gr = potential.gtf.dt[transcript_id == unique(md.sub.tr$transcript_id),][type != "transcript",] %>% GRanges(.,seqlengths = hg_seqlengths())
                                         #tr.missing.gr = tr.gr[tr.gr %outside% md.sub.tr]
                                         #mcols(tr.missing.gr) = NULL
         ##attempt not using outside
@@ -691,8 +926,10 @@ get_iso_reads = function(bam,
         ##meta.add.dt[, c("qid", "type","rid","riid","fid","col",) := NULL]
         if("isoform" %in% names(meta.add.dt)) {
           meta.add.dt = meta.add.dt[,.(transcript_id, qname, isoform, structural_category, subcategory, associated_transcript, gene_name, reannotated, transcript_type, transcript_name, qr_tr)]
-        } else {
+        } else if ("gene_name" %in% names(meta.add.dt)) {
           meta.add.dt = meta.add.dt[,.(transcript_id, qname, gene_name, reannotated, transcript_type, transcript_name, qr_tr)]
+        } else {
+          meta.add.dt = meta.add.dt[,.(transcript_id, qname, transcript_type, transcript_name, qr_tr)]
         }
         tr.missing.gr = unique(tr.missing.gr)
         ## save exon ids and number to add to meta data
@@ -703,7 +940,9 @@ get_iso_reads = function(bam,
         tr.missing.gr$exon_number = exon_number
         ##
         strand_gene = md.sub.tr@strand@values
-        tr.missing.gr@strand@values = strand_gene
+        tr.missing.dt = as.data.table(tr.missing.gr)
+        tr.missing.dt[, strand := strand_gene]
+        tr.missing.gr = tr.missing.dt %>% GRanges(., seqlengths = hg_seqlengths())
         ##
         md.sub.tr2 = c(md.sub.tr,tr.missing.gr)
         md.sub.tr.dt = as.data.table(md.sub.tr2)
@@ -711,7 +950,8 @@ get_iso_reads = function(bam,
         md.sub.tr.dt[is.na(coding_type_simple), coding_type_simple := "missing"]
         pos.dt = md.sub.tr.dt[strand == "+" | strand == "*",][order(seqnames,start,end),]
         neg.dt = md.sub.tr.dt[strand == "-" | strand == "*",][order(seqnames,-start,-end),]
-        return(rbind(pos.dt,neg.dt))
+        result.dt = rbind(pos.dt,neg.dt)
+        return(result.dt)
       }, mc.cores = cores)
       md.all.dt2 = rbindlist(md.all.dt2, fill = TRUE)
       ## add intron labels
@@ -741,28 +981,38 @@ get_iso_reads = function(bam,
         return(tile.dt)
       }, mc.cores = cores)
       tr.intron.dt = rbindlist(tr.intron.lst)
-      tr.intron.gr = GRanges(tr.intron.dt, seqlengths = hg_seqlengths())
+      if(nrow(tr.intron.dt) > 0) {
+        tr.intron.gr = GRanges(tr.intron.dt, seqlengths = hg_seqlengths())
+      }
       ## add transcript labels to the reads
+      ##sub.intron.lst = mclapply(unique(md.all.dt2$qname)[seq(4,400,16)], function(x) {
+      message("adding transcript labels to reads")
       sub.intron.lst = mclapply(unique(md.all.dt2$qname), function(x) {
         sub.gr = md.all.dt2[qname == x,] %>% GRanges(., seqlengths = hg_seqlengths())
-        sub.tr.gr = tr.intron.dt[transcript_id == sub.gr$transcript_id[1],] %>% GRanges(., seqlengths = hg_seqlengths())
-        sub.gr = gr.val(sub.gr, sub.tr.gr, "intron_number")
-        ## add all unique missing exon and retained intron numbers
-        unique.missing.exon.numbers = unique(na.omit(sub.gr$exon_number))
-        if(length(unique.missing.exon.numbers) == 0) {
-          unique.missing.exon.numbers = NA
+        if(nrow(tr.intron.dt[transcript_id == sub.gr$transcript_id[1],])>0) {
+          sub.tr.gr = tr.intron.dt[transcript_id == sub.gr$transcript_id[1],] %>% GRanges(., seqlengths = hg_seqlengths())
+          sub.gr = gr.val(sub.gr, sub.tr.gr, "intron_number")
+          ## add all unique missing exon and retained intron numbers
+          unique.missing.exon.numbers = unique(na.omit(sub.gr$exon_number))
+          if(length(unique.missing.exon.numbers) == 0) {
+            unique.missing.exon.numbers = NA
+          }
+          unique.retained.intron.numbers = unique(na.omit(sub.gr$intron_number))
+          if(length(unique.retained.intron.numbers) == 0) {
+            unique.retained.intron.numbers = NA
+          }
+          sub.gr$missing_exons = paste0(unique.missing.exon.numbers, collapse = ",")
+          sub.gr$retained_introns = paste0(unique.retained.intron.numbers, collapse = ",")
+          ## fix labels where extended UTR is called UTR
+          whole_transcript.gr = sub.tr.gr %>% gr.reduce
+          whole_transcript.gr$range = "in_gene"
+          sub.gr = gr.val(sub.gr, whole_transcript.gr, "range")
+          sub.dt = as.data.table(sub.gr)
+        } else {
+          sub.dt = as.data.table(sub.gr)
+          sub.dt[, range := "in_gene"]
         }
-        unique.retained.intron.numbers = unique(na.omit(sub.gr$intron_number))
-        if(length(unique.retained.intron.numbers) == 0) {
-          unique.retained.intron.numbers = NA
-        }
-        sub.gr$missing_exons = paste0(unique.missing.exon.numbers, collapse = ",")
-        sub.gr$retained_introns = paste0(unique.retained.intron.numbers, collapse = ",")
-        ## fix labels where extended UTR is called UTR
-        whole_transcript.gr = sub.tr.gr %>% gr.reduce
-        whole_transcript.gr$range = "in_gene"
-        sub.gr = gr.val(sub.gr, whole_transcript.gr, "range")
-        sub.dt = as.data.table(sub.gr)
+        sub.dt[, coding_type_simple := as.character(coding_type_simple)]
         sub.dt[range == "" & coding_type_simple == "intron", coding_type_simple := "UTR_long"]
         sub.dt[, range := NULL]
         ## add footprint for whole read (not including "missing") and whole read without strictness of UTR
@@ -775,7 +1025,8 @@ get_iso_reads = function(bam,
         sub.dt[, footprint_minus_UTR := list(sub.fp)]
         return(sub.dt)
       }, mc.cores = cores)
-      md.all.dt2 = rbindlist(sub.intron.lst)
+      ## test.dt = rbindlist(sub.intron.lst)
+      md.all.dt2 = rbindlist(sub.intron.lst, fill = TRUE)
       pos.dt = md.all.dt2[strand == "+" | strand == "*",][order(seqnames,start,end),]
       neg.dt = md.all.dt2[strand == "-" | strand == "*",][order(seqnames,-start,-end),]
       md.all.dt2 = rbind(pos.dt, neg.dt)
