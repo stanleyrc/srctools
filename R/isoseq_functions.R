@@ -257,16 +257,24 @@ get_iso_reads = function(bam,
         message("Found! OUT.read_assignments.tsv.gz")
       }
     }
-    reads.dt = fread(read_assignments)
-    ## very slow reads.dt = read.delim(read_assignments, header = TRUE, comment.char = "#")
-    names(reads.dt) = gsub("#","",reads.dt[1,])
-    reads.dt = reads.dt[2:nrow(reads.dt),]
-    reads.dt = reads.dt[read_id %in% md.dt$qname,]
-    names(reads.dt) = c("qname", "chr", "strand", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info")
-    reads.dt[, structural_category := tstrsplit(additional_info, "; Classification=", keep = 2)]
-    reads.dt[, structural_category := gsub(";","", structural_category)]
-    names(reads.dt)[names(reads.dt) == "strand"] = "strand_classification"
-    names(reads.dt)[names(reads.dt) == "chr"] = "chr_classification"
+
+    ## reads.dt = fread(read_assignments)
+    ## ## very slow reads.dt = read.delim(read_assignments, header = TRUE, comment.char = "#")
+    ## names(reads.dt) = gsub("#","",reads.dt[1,])
+    ## reads.dt = reads.dt[2:nrow(reads.dt),]
+    ## reads.dt = reads.dt[read_id %in% md.dt$qname,]
+    ## names(reads.dt) = c("qname", "chr", "strand", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info")
+    ## reads.dt[, structural_category := tstrsplit(additional_info, "; Classification=", keep = 2)]
+    ## reads.dt[, structural_category := gsub(";","", structural_category)]
+    ## names(reads.dt)[names(reads.dt) == "strand"] = "strand_classification"
+    ## names(reads.dt)[names(reads.dt) == "chr"] = "chr_classification"
+    ##
+    if(inherits(read_assignments,"character")) {
+      reads.dt = isoquant_read_assignments(read_assignments)
+    } else if (inherits(read_assignments,"data.table")) {
+      message("User supplied read assignments as data.table. Continuing ...")
+      reads.dt = read_assignments
+    }
     ##add transcript labels to bam reads
     md.dt2 = unlist(md.grl) %>% as.data.table()
     if(nrow(md.dt2) > 0) { ## necessary for fusions where md.dt2 is probably empty
