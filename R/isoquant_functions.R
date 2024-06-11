@@ -5,7 +5,7 @@
 ## qname
 ## transcript_id (reference ID)
 isoquant_read_assignments = function(read_assignments) {
-  reads.dt = fread(pairs.dt[pair,read_assignments])
+  reads.dt = fread(read_assignments)
   reads.dt = reads.dt[2:nrow(reads.dt),]
   names(reads.dt) = c("qname", "chr", "strand", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info")
   reads.dt[, structural_category := tstrsplit(additional_info, "; Classification=", keep = 2)]
@@ -140,7 +140,7 @@ gtf2dt = function(gtf) {
 ## column first_read_assignment represents unique isoform reads to use when subsetting with get_iso_reads
 ## function to get the reads the mapp to a specific gene
 ## function to get the reads the mapp to a specific gene
-reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, pad = 0) {
+reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "exons", pad = 0) {
   if(inherits(ref_gtf.gr, "character")) {
     if(file.exists(ref_gtf.gr)) {
       ref_gtf.gr = gtf2dt(ref_gtf.gr) %>% GRanges(.,seqlengths = hg_seqlengths())
@@ -159,17 +159,20 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, pad = 0) {
     message("User supplied sample_gtf.gr as GRanges. Continuing...")
   } else if(inherits(sample_gtf.gr, "data.table")) {
     message("User supplied sample_gtf.gr as data.table. Converting to a GRanges")
-    sample_gtf.gr.gr = GRanges(sample_gtf.gr, seqlengths = hg_seqlengths())
+    sample_gtf.gr = GRanges(sample_gtf.gr, seqlengths = hg_seqlengths())
   } 
 
   if(inherits(reads.dt, "character")) {
-    reads.dt = isoquant_read_assignments(pairs.dt[pair,read_assignments])
+    reads.dt = isoquant_read_assignments(reads.dt)
   } else if (inherits(reads.dt,"data.table")) {
     message("User supplied reads.dt as data.table")
   }
   sample_gtf_sub.gr = sample_gtf.gr %&% ((ref_gtf.gr %Q% (gene_name %in% genes)) + pad)
   ##get unique transcript ids contributing to this gene region
   uniq.gene.tr_ids.lst = sample_gtf_sub.gr$transcript_id %>% unique %>% na.omit %>% as.character
+  ## need to add model_reads.dt to get all of the qnames here
+  ## browser()
+  ## uniq.gene.tr_ids.lst
   ## get accurate counts and tpm by counting the number of reads with a specific transcript_id and assignment_events
   reads.dt[, count_assignment := .N, by = c("transcript_id","assignment_events")]
   reads.dt[, count_assignment_type := .N, by = c("transcript_id","assignment_events","assignment_type")]
@@ -179,7 +182,7 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, pad = 0) {
   reads.dt[, grp_assignment_type_exons := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons")]
   ## 
   gene.dt = reads.dt[transcript_id %in% uniq.gene.tr_ids.lst,]
-  gene.dt = gene.dt[order(-count_assignment_type_exons),][count_assignment_type_exons != 1,]
+  gene.dt = gene.dt[order(-count_assignment_type_exons),]## [count_assignment_type_exons != 1,]
   gene.dt[, exons_list := list(strsplit(exons, ",", fixed = TRUE)), by = "qname"]
   gene.dt[, exons_minus_ends_list := lapply(exons_list, function(x) {
     return(x[2:(length(x)-1)])
@@ -188,10 +191,16 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, pad = 0) {
     return(paste0(x, collapse = ","))
   })]
   gene.dt[, grp_assignment_type_exons_minus_ends := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
+  gene.dt[, count_assignment_type_exons_minus_ends := .N, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
+  ## if(group_by == "exons") {
   ## get all reads as a list object 
   gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends]
   ## get first read for each so I can plot every GENE variant
   gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons]
+  ## } else if (group_by == "assignment_events") {
+  ##   gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_assignment_type]
+  ##   gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_assignment_type]
+  ## }
   return(gene.dt)
 }
 

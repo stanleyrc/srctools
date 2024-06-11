@@ -187,6 +187,7 @@ get_iso_reads = function(bam,
                          remove_cigar_tags = c("S","D"),
                          unique_reads = TRUE,
                          subset_qname = NULL, #reads to subset on
+                         filter_qname = NULL, # reads to filter out
                          pipeline = "isoquant",
                          cores = 1) {
   message(paste0("Reading in ",bam))
@@ -204,7 +205,9 @@ get_iso_reads = function(bam,
   if(!is.null(subset_qname)) {
     md.dt = md.dt[qname %in% subset_qname,]
   }
-  
+  if(!is.null(filter_qname)) {
+    md.dt = md.dt[!(qname %in% filter_qname),]
+  }
   md.gr = GRanges(md.dt,seqlengths = hg_seqlengths())
   message("Splicing cigar string")
   md.grl = bamUtils::splice.cigar(md.gr,get.seq = TRUE, rem.soft = FALSE)
