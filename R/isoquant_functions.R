@@ -192,21 +192,33 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "e
   })]
   gene.dt[, grp_assignment_type_exons_minus_ends := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
   gene.dt[, count_assignment_type_exons_minus_ends := .N, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
-  ## if(group_by == "exons") {
+  if(group_by == "exons") {
   ## get all reads as a list object 
-  gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends]
-  ## get first read for each so I can plot every GENE variant
-  gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons]
-  ## } else if (group_by == "assignment_events") {
-  ##   gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_assignment_type]
-  ##   gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_assignment_type]
-  ## }
+    gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends]
+    ## get first read for each so I can plot every GENE variant
+    gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons]
+  } else if (group_by == "assignment_events") {
+    gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_assignment_type]
+    gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_assignment_type]
+  }
   return(gene.dt)
 }
 
 ## function to use reads_genes and get the gwalks for that
-unique_reads_gw = function(bam, ref_gtf.gr, sample_gtf.gr, reads.dt, genes, cores = 2, pad = 0, return_type = "gw") {
-  gene_reads.dt = reads_genes(ref_gtf.gr = ref_gtf.gr, sample_gtf.gr = sample_gtf.gr, reads.dt = reads.dt, genes = genes, pad = pad)
+unique_reads_gw = function(bam, ref_gtf.gr, sample_gtf.gr, reads.dt, genes, cores = 2, pad = 0, group_by = "exons", min_reads_isoform = NULL,return_type = "gw") {
+  if(inherits(reads.dt, "character")) {
+    reads.dt = isoquant_read_assignments(reads.dt)
+  } else if (inherits(reads.dt,"data.table")) {
+    message("User supplied reads.dt as data.table")
+  }
+  gene_reads.dt = reads_genes(ref_gtf.gr = ref_gtf.gr, sample_gtf.gr = sample_gtf.gr, reads.dt = reads.dt, genes = genes, pad = pad, group_by = group_by)
+  if(!is.null(min_reads_isoform)) {
+    if(group_by == "exons") {
+      gene_reads.dt = gene_reads.dt[count_assignment_type_exons_minus_ends > min_reads_isoform,]
+    } else if (group_by == "assignment_type") {
+      gene_reads.dt = gene_reads.dt[count_assignment_type > min_reads_isoform,]
+    }
+  }
   qname_list = gene_reads.dt$first_read_assignment %>% unique
   gene.gr = (ref_gtf.gr %Q% (gene_name %in% genes)) %>% gr.reduce
   gene.gw = get_iso_reads(bam,
