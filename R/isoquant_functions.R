@@ -205,7 +205,17 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "e
 }
 
 ## function to use reads_genes and get the gwalks for that
-unique_reads_gw = function(bam, ref_gtf.gr, sample_gtf.gr, reads.dt, genes, cores = 2, pad = 0, group_by = "exons", min_reads_isoform = NULL,return_type = "gw") {
+unique_reads_gw = function(bam, #aligned bam to get reads
+                           ref_gtf.gr, # reference gtf-can be character to path, granges, or data.table that can be converted
+                           sample_gtf.gr, # sample gtf output of isoquant-can be character to path, granges, or data.table that can be converted
+                           reads.dt,      #reads.dt- output of isoquant_read_assignments after reading in read assignments
+                           genes,         #what genes to get unique isoforms
+                           cores = 2,     #cores for get_iso_reads
+                           pad = 0,       #pad for genes around a specific region
+                           group_by = "exons", #group by for grouping the reads-exons is the most strict-all exons except the first and last have to be correct. assignment_type is slightly less strict and uses the assignment_events from isoquant
+                           min_reads_isoform = NULL,
+                           return_type = "gw", #return as a gw or grl for the first element returned
+                           pad_get_iso = 10000) { #pad for reading in the specific qnames
   if(inherits(reads.dt, "character")) {
     reads.dt = isoquant_read_assignments(reads.dt)
   } else if (inherits(reads.dt,"data.table")) {
@@ -222,7 +232,7 @@ unique_reads_gw = function(bam, ref_gtf.gr, sample_gtf.gr, reads.dt, genes, core
   qname_list = gene_reads.dt$first_read_assignment %>% unique
   gene.gr = (ref_gtf.gr %Q% (gene_name %in% genes)) %>% gr.reduce
   gene.gw = get_iso_reads(bam,
-                          gr = gene.gr,
+                          gr = (gene.gr + pad_get_iso),
                           gtf = ref_gtf.gr,
                           cores = cores,
                           reannotate = FALSE,
@@ -231,5 +241,8 @@ unique_reads_gw = function(bam, ref_gtf.gr, sample_gtf.gr, reads.dt, genes, core
                           type = return_type,
                           pipeline = "isoquant",
                           subset_qname = qname_list)
+  ## add the transcript name and id that is plotted to gene_reads.dt
+  gene.gw.dt = as.data.table(grl.unlist(gene.gw$grl))[,.(transcript_name,transcript_id,qname)] %>% setnames(., c("plot_transcript_name", "plot_transcript_id", "first_read_assignment")) %>% unique
+  gene_reads.dt = merge.data.table(gene.gw.dt,gene_reads.dt, by = "first_read_assignment", all = TRUE)
   return(list(gene.gw, gene_reads.dt))
 }
