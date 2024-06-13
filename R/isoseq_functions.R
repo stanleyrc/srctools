@@ -32,7 +32,27 @@ name.gw = function(gw, cols= NULL, div = "; ", col = NULL) {
   gw$set(name = new_names)
 }
 
+## Subset a gencode to only include the transcript_ids in the gW-uses the original colormap
+subset_gencode = function(gencode, gw, height = 30) {
+  new_data = gencode@data[[1]][names(gencode@data[[1]]) %in% unlist(gw$grl)$transcript_id]
+  new_data.gr = grl.unlist(new_data)
+  new_data.grl = gr2grl2(new_data.gr,"transcript_name")
+  new_data.gt = gTrack(new_data.grl, height = height, colormap = gencode@colormap)
+  return(new_data.gt)
+}
+## subset_gencode = function(gencode, gw, height = 30) {
+##   new_data = gencode@data[[1]][names(gencode@data[[1]]) %in% unlist(gw$grl)$transcript_id]
+##   new_data.gr = grl.unlist(new_data)
+##   new_data.grl = gr2grl2(new_data.gr,"transcript_name")
+##   new_data.gt = gTrack(new_data.grl, height = height, colormap = gencode@colormap)
+##   return(new_data.gt)
+## }
+
+
+
+
 ## function to reduce the transcripts plotted by combining the same transcript into one and returning the counts
+## only tested on pacbio pipeline outputs where structural category is an output
 collapse_same_tr = function(gw, keep_longest = TRUE, keep_incomplete_matches = TRUE) {
   if(!keep_incomplete_matches) {
     stop("this is not implemented are probably not going to be... Should keep all incomplete matches")
@@ -284,6 +304,24 @@ get_iso_reads = function(bam,
       md.dt3 = merge.data.table(md.dt2, reads.dt, by = "qname", all = TRUE)[type != "N",]
     } else {
       md.dt3 = reads.dt
+    }
+    ## add check for multiple assigned transcripts of the same read-if so pick longest
+    check.dt = md.dt3[,.(qname,transcript_id)] %>% unique
+    check.dt[, N_qname_tr_id := .N, by = "qname"]
+    if(nrow(check.dt[N_qname_tr_id > 1,]) > 1) {
+      check.sub.dt = check.dt[N_qname_tr_id > 1,]
+      qnames_multiple_tr_ids = check.sub.dt$qname %>% unique
+      warning(paste0("Some transcripts are assigned to multiple reads by isoquant. Will assign the longest. Reads: ",qnames_multiple_tr_ids))
+      md.lst = mclapply(unique(check.sub.dt$qname), function(x) {
+        tr.test = check.sub.dt[qname == x,]$transcript_id
+        tr.dt = as.data.table((gtf.gr %Q% (transcript_id %in% tr.test)) %Q% (type == "transcript"))
+        tr.dt = tr.dt[order(-width),]
+        selected_transcript = tr.dt$transcript_id[1]
+        sub.dt = md.dt3[qname == x & transcript_id == selected_transcript,]
+        return(sub.dt)
+      },mc.cores = cores)
+      md.temp.dt = rbindlist(md.lst, fill = TRUE)
+      md.dt3 = rbind(md.dt3[!(qname %in% md.temp.dt$qname),],md.temp.dt)
     }
   } else if(reannotate) {
     ## cols_keep = c("qname", "seqnames", "start", "end", "width", "strand", "type")

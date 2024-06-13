@@ -177,9 +177,14 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "e
   reads.dt[, count_assignment := .N, by = c("transcript_id","assignment_events")]
   reads.dt[, count_assignment_type := .N, by = c("transcript_id","assignment_events","assignment_type")]
   reads.dt[, count_assignment_type_exons := .N, by = c("transcript_id","assignment_events","assignment_type","exons")]
+  gene.dt = reads.dt[transcript_id %in% uniq.gene.tr_ids.lst,]
+  gene.dt = gene.dt[order(-count_assignment),]
   reads.dt[, grp_assignment := .GRP, by = c("transcript_id","assignment_events")]
+  gene.dt = gene.dt[order(-count_assignment_type),]
   reads.dt[, grp_assignment_type := .GRP, by = c("transcript_id","assignment_events","assignment_type")]
+  gene.dt = gene.dt[order(-count_assignment_type_exons),]
   reads.dt[, grp_assignment_type_exons := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons")]
+
   ## 
   gene.dt = reads.dt[transcript_id %in% uniq.gene.tr_ids.lst,]
   gene.dt = gene.dt[order(-count_assignment_type_exons),]## [count_assignment_type_exons != 1,]
@@ -190,16 +195,29 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "e
   gene.dt[, exons_minus_ends := sapply(exons_minus_ends_list, function(x) {
     return(paste0(x, collapse = ","))
   })]
-  gene.dt[, grp_assignment_type_exons_minus_ends := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
   gene.dt[, count_assignment_type_exons_minus_ends := .N, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
-  if(group_by == "exons") {
+  gene.dt = gene.dt[order(-count_assignment_type_exons_minus_ends),]
+  gene.dt[, grp_assignment_type_exons_minus_ends := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons_minus_ends")]
+  gene.dt[, count_exons_only := .N, by = c("transcript_id","exons_minus_ends")]
+  gene.dt = gene.dt[order(-count_exons_only),]
+  gene.dt[, grp_exons_only := .GRP, by = c("transcript_id","exons_minus_ends")]
+  if(group_by == "exons_assignment_events") {
   ## get all reads as a list object 
     gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends]
     ## get first read for each so I can plot every GENE variant
     gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons]
+    gene.dt[, final_grp_assignment := grp_assignment_type_exons_minus_ends]
+    gene.dt[, final_count_assignment := count_assignment_type_exons_minus_ends]
   } else if (group_by == "assignment_events") {
     gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_assignment_type]
     gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_assignment_type]
+    gene.dt[, final_grp_assignment := grp_assignment_type]
+    gene.dt[, final_count_assignment := count_assignment_type]
+  } else if (group_by == "exons_only") {
+    gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_exons_only]
+    gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_exons_only]
+    gene.dt[, final_grp_assignment := grp_exons_only]
+    gene.dt[, final_count_assignment := count_exons_only]
   }
   return(gene.dt)
 }
@@ -210,11 +228,13 @@ unique_reads_gw = function(bam, #aligned bam to get reads
                            sample_gtf.gr, # sample gtf output of isoquant-can be character to path, granges, or data.table that can be converted
                            reads.dt,      #reads.dt- output of isoquant_read_assignments after reading in read assignments
                            genes,         #what genes to get unique isoforms
-                           cores = 2,     #cores for get_iso_reads
+                           cores = 2,     #cores for get_iso_reads and adding y
                            pad = 0,       #pad for genes around a specific region
-                           group_by = "exons", #group by for grouping the reads-exons is the most strict-all exons except the first and last have to be correct. assignment_type is slightly less strict and uses the assignment_events from isoquant
+                           group_by = "exons_assignment_events", #group by for grouping the reads-exons_assignment_events is the most strict-all exons except the first and last have to be correct. assignment_type is slightly less strict and uses the assignment_events from isoquant
                            min_reads_isoform = NULL,
                            return_type = "gw", #return as a gw or grl for the first element returned
+                           get_reads = TRUE, #boolean of whether to just return the read assignments or reads assignments and reads as gw or grl
+                           add_y = TRUE, # if true, forces return_type to gw but 
                            pad_get_iso = 10000) { #pad for reading in the specific qnames
   if(inherits(reads.dt, "character")) {
     reads.dt = isoquant_read_assignments(reads.dt)
@@ -223,26 +243,99 @@ unique_reads_gw = function(bam, #aligned bam to get reads
   }
   gene_reads.dt = reads_genes(ref_gtf.gr = ref_gtf.gr, sample_gtf.gr = sample_gtf.gr, reads.dt = reads.dt, genes = genes, pad = pad, group_by = group_by)
   if(!is.null(min_reads_isoform)) {
-    if(group_by == "exons") {
-      gene_reads.dt = gene_reads.dt[count_assignment_type_exons_minus_ends > min_reads_isoform,]
-    } else if (group_by == "assignment_type") {
-      gene_reads.dt = gene_reads.dt[count_assignment_type > min_reads_isoform,]
-    }
+    ## if(group_by == "exons_assignment_events") {
+    ##   gene_reads.dt = gene_reads.dt[count_assignment_type_exons_minus_ends > min_reads_isoform,]
+    ## } else if (group_by == "assignment_type") {
+    ##   gene_reads.dt = gene_reads.dt[count_assignment_type > min_reads_isoform,]
+    ## }
+    ## } else if (group_by == "exons_only") {
+    ##   gene_reads.dt = gene_reads.dt[count_assignment_type > min_reads_isoform,]
+    ## }
+    gene_reads.dt = gene_reads.dt[final_count_assignment >= min_reads_isoform,]
   }
   qname_list = gene_reads.dt$first_read_assignment %>% unique
   gene.gr = (ref_gtf.gr %Q% (gene_name %in% genes)) %>% gr.reduce
-  gene.gw = get_iso_reads(bam,
-                          gr = (gene.gr + pad_get_iso),
-                          gtf = ref_gtf.gr,
-                          cores = cores,
-                          reannotate = FALSE,
-                          annotate_missing = TRUE,
-                          read_assignments = reads.dt,
-                          type = return_type,
-                          pipeline = "isoquant",
-                          subset_qname = qname_list)
-  ## add the transcript name and id that is plotted to gene_reads.dt
-  gene.gw.dt = as.data.table(grl.unlist(gene.gw$grl))[,.(transcript_name,transcript_id,qname)] %>% setnames(., c("plot_transcript_name", "plot_transcript_id", "first_read_assignment")) %>% unique
-  gene_reads.dt = merge.data.table(gene.gw.dt,gene_reads.dt, by = "first_read_assignment", all = TRUE)
-  return(list(gene.gw, gene_reads.dt))
+  if(get_reads) {
+    gene.gw = get_iso_reads(bam,
+                            gr = (gene.gr + pad_get_iso),
+                            gtf = ref_gtf.gr,
+                            cores = cores,
+                            reannotate = FALSE,
+                            annotate_missing = TRUE,
+                            read_assignments = reads.dt,
+                            type = return_type,
+                            pipeline = "isoquant",
+                            subset_qname = qname_list)
+    if(return_type == "gw") {
+      ## add the transcript name and id that is plotted to gene_reads.dt
+      gene.gw.dt = as.data.table(grl.unlist(gene.gw$grl))[,.(transcript_name,transcript_id,qname)] %>% setnames(., c("plot_transcript_name", "plot_transcript_id", "first_read_assignment")) %>% unique
+    } else if(return_type =="grl") {
+      ## add the transcript name and id that is plotted to gene_reads.dt
+      gene.gw.dt = as.data.table(grl.unlist(gene.gw))[,.(transcript_name,transcript_id,qname)] %>% setnames(., c("plot_transcript_name", "plot_transcript_id", "first_read_assignment")) %>% unique
+    }
+    gene_reads.dt = merge.data.table(gene.gw.dt,gene_reads.dt, by = "first_read_assignment", all = TRUE)
+    if(add_y) {
+      if(inherits(gene.gw,"gWalk")) {
+        gene.gw = gene.gw$grl
+      }
+      gene.gw.lst = mclapply(1:length(gene.gw), function(x) {
+        gene.sub.gw = gene.gw[[x]]
+        ## qname1 = names(gene.gw[x])
+        ## gene_reads_sub.dt = gene_reads.dt[first_read_assignment == names(gene.gw[x]),]
+        qname1 = gene.sub.gw$qname[1] %>% unique
+        gene_reads_sub.dt = gene_reads.dt[first_read_assignment == qname1,]
+        add_count = unique(gene_reads_sub.dt$final_count_assignment)
+        ## sometimes the same read can be for multiple "isoforms" - if one read was assigned to multiple isoforms from isoqaunt
+        ## I have only seen reads with one count like this
+        if(length(add_count) > 1) {
+          gene.sub.gw$count = paste0(add_count, collapse = ",")
+        } else {
+          gene.sub.gw$count = as.character(add_count)
+        }
+        add_grp = unique(gene_reads_sub.dt$final_grp_assignment)
+        if(length(add_grp) > 1) {
+          gene.sub.gw$grp = paste0(add_grp,collapse = ",")
+        } else {
+          gene.sub.gw$grp = as.character(add_grp)
+        }
+        ## add the grp assignment to the walks grl
+        tr = gene.sub.gw$transcript_id[1] %>% unique
+        grp_assignment = as.character(gene_reads_sub.dt[transcript_id == tr & first_read_assignment == qname1,]$final_grp_assignment %>% unique) %>% paste0("GRP.",.)
+        qname_list = unlist(gene_reads_sub.dt[transcript_id == tr & first_read_assignment == qname1,]$reads_grp_assignment_type) %>% unique
+        if(grp_assignment == "GRP." & is.null(qname_list)) {
+          grp_assignment = as.character(gene_reads_sub.dt[first_read_assignment == qname1,]$final_grp_assignment %>% unique) %>% paste0("GRP.",.)
+          qname_list = unlist(gene_reads_sub.dt[first_read_assignment == qname1,]$reads_grp_assignment_type) %>% unique
+        }
+        gene.sub.gw$grp_assignment = grp_assignment
+        ## gene.sub.gw$qname_list = list(qname_list)
+        return(as.data.table(gene.sub.gw))
+      },mc.cores = cores)
+      gene.gw.dt = rbindlist(gene.gw.lst, fill = TRUE)
+      ## gene.gw.dt[, y := as.numeric(count)]
+      gene.gw.gr = GRanges(gene.gw.dt, seqlengths = hg_seqlengths())
+      gene.gw = rtracklayer::split(gene.gw.gr, f = mcols(gene.gw.gr)["qname"])
+      if(return_type == "gw") {
+        message("Converting to gW")
+        gene.gw = gW(grl = gene.gw)
+        ## add transcript names
+        message("Adding transcript names as: transcript_name ; Count")
+        name.gw(gene.gw,c("transcript_name","count"))
+        ## transcript_names = sapply(gene.gw$grl, function(x) x$transcript_name[1])
+        ## gene.gw$set(name = transcript_names)
+        ## add y values in order of abundance
+        message("Adding y values in order of abundance")
+        abundance_order.dt = data.table(count = (sapply(gene.gw$grl, function(x) x$count[1]) %>% as.numeric))
+        abundance_order.dt[,current_order := 1:.N]
+        abundance_order.dt = abundance_order.dt[order(-count),]
+        abundance_order.dt[, y_value := .N:1]
+        abundance_order.dt = abundance_order.dt[order(current_order),]
+        gene.gw$set(y = abundance_order.dt$y_value)
+      }
+    }
+    return(list(gene.gw, gene_reads.dt))
+  } else {
+    return(gene_reads.dt)
+  }
 }
+
+
