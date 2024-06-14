@@ -280,7 +280,6 @@ get_iso_reads = function(bam,
         message("Found! OUT.read_assignments.tsv.gz")
       }
     }
-
     ## reads.dt = fread(read_assignments)
     ## ## very slow reads.dt = read.delim(read_assignments, header = TRUE, comment.char = "#")
     ## names(reads.dt) = gsub("#","",reads.dt[1,])
@@ -1586,7 +1585,7 @@ get_iso_fusions = function(bam,
       md.novel.dt3 = as.data.table(md_potential_tr.gr2)
       return(md.novel.dt3)
     })
-    md.annotated.dt3 = rbindlist(md.annotated.lst3)  
+    md.annotated.dt3 = rbindlist(md.annotated.lst3)
     md.annotated.dt3[, coding_type_vect := lapply(coding_type, function(x) unlist(strsplit(x, ", ")))]
 ################
     md.annotated.dt3[, coding_type_vect := lapply(coding_type, function(x) unlist(strsplit(x, ", ")))]
