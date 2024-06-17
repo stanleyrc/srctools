@@ -40,13 +40,6 @@ subset_gencode = function(gencode, gw, height = 30) {
   new_data.gt = gTrack(new_data.grl, height = height, colormap = gencode@colormap)
   return(new_data.gt)
 }
-## subset_gencode = function(gencode, gw, height = 30) {
-##   new_data = gencode@data[[1]][names(gencode@data[[1]]) %in% unlist(gw$grl)$transcript_id]
-##   new_data.gr = grl.unlist(new_data)
-##   new_data.grl = gr2grl2(new_data.gr,"transcript_name")
-##   new_data.gt = gTrack(new_data.grl, height = height, colormap = gencode@colormap)
-##   return(new_data.gt)
-## }
 
 
 
@@ -168,7 +161,7 @@ isoseq_gff2gw = function(collapsed.gff, classification, chr = TRUE,subset_class 
 
 ## genearte grl from gr based on id column
 gr2grl2 = function(gr, ID) {
-  return(split(gr, f = mcols(gr)[[ID]]))
+  return(rtracklayer::split(gr, f = mcols(gr)[[ID]]))
 }
 
 

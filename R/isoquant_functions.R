@@ -396,7 +396,9 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
                           bam_column = "aligned_bam",         #column in pairs table for bam file
                           read_assignments_column = "read_assignments", #column in pairs table with read assignments
                           return_type = "gw",                          #whether to return as a gw, else will return grl
-                          pad_get_iso = 10000) {                            #value to pad reading in the bam files
+                          pad_get_iso = 10000,                            #value to pad reading in the bam files
+                          ignore_polyA_assignment = TRUE)                 #whether to ignore polyA=False and polyA=TRUE in additional_info
+  {
   if(!is.null(min_counts_isoform)) {
     genes_reads.dt2 = genes_reads.dt[final_count_assignment_all_samples > min_counts_isoform,]
   }
@@ -504,9 +506,13 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       gene.gw$set(transcript_id = abundance_order.dt$transcript_id)
       message("Adding assignment_events, assignment_type, exons_minus_ends, structural_category, final_grp_assignment, additional_info, and counts for each sample.")
       gene.gw.dt = gene.gw$dt
-      cols_add = c("assignment_events", "assignment_type", "exons_minus_ends", "structural_category", "final_grp_assignment", "additional_info")
+      cols_add = c("assignment_events", "assignment_type", "exons_minus_ends", "structural_category", "final_grp_assignment", "additional_info", "gene_name")
       cols_add = c(cols_add,grep("^counts_",names(genes_reads.dt2),value = TRUE))
       genes_reads.dt2_merge = genes_reads.dt2[,..cols_add] %>% unique
+      if(ignore_polyA_assignment) {
+        genes_reads.dt2_merge[, additional_info := gsub("PolyA=False|PolyA=True", "PolyA=ignored",additional_info)]
+        genes_reads.dt2_merge = unique(genes_reads.dt2_merge)
+      }
       genes_reads.dt2_merge[,final_grp_assignment := paste0("GRP.",final_grp_assignment)]
       genes_reads.dt2_merge = genes_reads.dt2_merge[final_grp_assignment %in% gene.gw.dt$grp_assignment,]
       if(nrow(genes_reads.dt2_merge) == length(gene.gw)) {
@@ -515,10 +521,9 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
         cols_add2 = names(set.dt)
         cols_add2 = cols_add2[!(cols_add2 %in% c("walk.id","grp_assignment"))]
         for(x in cols_add2) {
-          expr <- parse(text = paste0("gene.gw$set(", x, " = set.dt[['", x, "']])"))
+          expr <- parse(text = paste0("gene.gw$set(", x, " = set.dt[['", x, "']])")) #set for all to add to the data.table
           eval(expr)
         }
-        
       } else {
         warning("Genes_reads.dt2 unique values are not the same length as the number of walks. Extra annotations will not be added")
       }
@@ -529,3 +534,157 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
     return(genes_reads.dt2)
   }
 }
+
+
+## function for plotting the gwalks that come out of genes_reads2gw
+plot_isoforms_gw = function(gw,
+                         gr,
+                         samples,
+                         gencode = NULL,
+                         gw_plotname = "",
+                         plot1 = "plot.png",
+                         plot2 = "plot2.png",
+                         plot3 = "plot3.png",
+                         gw_height = 30,
+                         gencode_height = 15,
+                         plot_pad = 0,
+                         subset_gencode = TRUE,
+                         name = c("transcript_name","grp_assignment"),
+                         sep_name = "; ",
+                         counts_col_prefix = "counts_",
+                         plot_title = "",
+                         counts_theme = NULL, #theme for the counts plot
+                         total_reads = NULL,  #if not null will plot a third plot with tpm-has to be the same length as samples
+                         max_isoforms = NULL,
+                         max_order_by = "Count", #relevant if max_isoforms is not NULL, takes the top N isoforms by either "Count" for ordering isoforms by single sample counts or "total_count" for ordering by the total counts across samples
+                         gene = NULL, #if NULL will consider all genes within the specified granges, TRUE will filter for a specfied gene name
+                         walk_height = 20000,
+                         walk_width = 12000,
+                         walk_res = 300,
+                         counts_height = 5000,
+                         counts_width = 8000,
+                         counts_res = 300) {
+  gw2 = gw %&% gr
+  if(!is.null(gene)) {
+    indices = gw2$dt[gene_name == gene]$walk.id
+    gw2 = gw2[indices]
+  }
+  plot.dt = gw2$dt
+  ## resetting the y based on the subset transcripts
+  gw2$set(y = length(gw2):1)
+  if(subset_gencode & !is.null(gencode)) {
+    message("subsetting gencode to the transcripts in the gwalk")
+    gencode.subset = subset_gencode(gencode = gencode, gw = gw2, height = gencode_height)
+    gencode.subset$height = gencode_height
+  } else if(!is.null(gencode)) {
+    gencode.subset = gencode
+    gencode.subset$height = gencode_height
+  } else {
+    gencode.subset = NULL
+  }
+  if(plot_pad != 0) {
+    gr = gr + plot_pad
+  }
+  ## set the names specified
+  name.dt = plot.dt[,..name]
+  name.dt[, new_name := apply(.SD, 1, function(row) paste(row, collapse = sep_name))]
+  gw2$set(name = name.dt$new_name)
+  if(is.null(max_isoforms)) {
+    ppng(plot(c(gw2$gtrack(name = gw_plotname,height = gw_height,y.field = "y",yaxis = FALSE), gencode.subset), gr), height = walk_height, width = walk_width, res = walk_res, file = plot1)
+  }
+  
+  ## now make the barplot
+  sample_cols = paste0(counts_col_prefix, samples)
+  cols_keep = c("grp_assignment","transcript_name","gene_name",sample_cols)
+  plot.dt2 = plot.dt[,..cols_keep]
+  long.dt = melt.data.table(data = plot.dt2,id.vars = c("grp_assignment","transcript_name","gene_name"), value.name = "Count", variable.name = "Sample")
+  long.dt[, total_count := sum(Count), by = grp_assignment]
+  long.dt = long.dt[order(-total_count),]
+  ## add the grp_assignment as a factor so the order of the plot is the same as the order of the gwalks
+  long.dt[, grp_assignment := factor(grp_assignment, levels = unique(long.dt$grp_assignment))]
+  sub.dt = long.dt[,..name] #subset data.table to add same name as walks
+  sub.dt[, new_name := apply(.SD, 1, function(row) paste(row, collapse = sep_name))]
+  long.dt[,new_name := sub.dt$new_name]
+  long.dt[,Sample := gsub(counts_col_prefix,"",Sample)]
+  long.dt = long.dt[order(-total_count),]
+  long.dt[, new_name := factor(new_name, levels = unique(long.dt$new_name))]
+  unique_grp_length = long.dt$grp_assignment %>% unique %>% length
+  if(!is.null(max_isoforms) & (unique_grp_length > max_isoforms)) {
+    counts.dt = long.dt[,.(grp_assignment,Count,total_count)]
+    if(max_order_by == "Count") {
+      counts.dt = counts.dt[order(-Count),]
+    } else if (max_order_by == "total_count") {
+      counts.dt = counts.dt[order(-total_count),]
+    }
+    grp_subset = counts.dt$grp_assignment %>% unique
+    grp_subset = grp_subset[1:max_isoforms] %>% na.omit %>% as.character
+    long.dt = long.dt[grp_assignment %in% grp_subset,]
+  }
+  if(!is.null(max_isoforms) & (unique_grp_length > max_isoforms)) {
+    gw3 = gw2[grp_assignment %in% grp_subset]
+    ppng(plot(c(gw3$gtrack(name = gw_plotname,height = gw_height,y.field = "y",yaxis = FALSE), gencode.subset), gr), height = walk_height, width = walk_width, res = walk_res, file = plot1)
+  } else if(!is.null(max_isoforms)) {
+    ppng(plot(c(gw2$gtrack(name = gw_plotname,height = gw_height,y.field = "y",yaxis = FALSE), gencode.subset), gr), height = walk_height, width = walk_width, res = walk_res, file = plot1)
+  }
+  pt = plot_isoform_counts(data = long.dt,
+                           x = "new_name",
+                           y = "Count",
+                           plot_title = plot_title,
+                           xlab = "",
+                           ylab = "Count",
+                           fill = "Sample",
+                           filllab = "Sample",
+                           type = "bar",
+                           add_theme = counts_theme)
+  ppng(print(pt),height = counts_height, width = counts_width, res = counts_res, file = plot2)
+  if(!is.null(total_reads)) {
+    sample_counts.dt = data.table(Sample = samples, total_read_counts = total_reads)
+    long.dt = merge.data.table(long.dt, sample_counts.dt, by = "Sample", all.x = TRUE)
+    long.dt[, TPM := Count / (total_read_counts / 1e6)]
+    pt2 = plot_isoform_counts(data = long.dt,
+                             x = "new_name",
+                             y = "TPM",
+                             plot_title = plot_title,
+                             xlab = NULL,
+                             ylab = "TPM",
+                             fill = "Sample",
+                             filllab = "Sample",
+                             type = "bar",
+                             add_theme = counts_theme)
+    ppng(print(pt2),height = counts_height, width = counts_width, res = counts_res, file = plot3)
+  }
+  return(long.dt)
+}
+
+
+## function for plotting isoform counts
+plot_isoform_counts = function(data, x, y, fill, plot_title, xlab = "", ylab = y, filllab = fill, add_theme = NULL, type = "bar") {
+  if(type == "bar") {
+    pt = ggplot(data = data, aes(x = get(x), y = get(y), fill = get(fill))) +
+      geom_bar(stat = "identity", position = position_dodge()) +
+      labs(title = plot_title,
+           x = xlab,
+           y = ylab,
+           fill = filllab) +
+      theme_pub() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+            axis.text.y = element_text(size = 26),
+            axis.title.y = element_text(size = 30),
+            plot.title = element_text(size = 28, hjust = 0.5),
+            legend.title = element_text(size = 20),
+            legend.text = element_text(size = 16),
+            legend.position="right", legend.direction="vertical",
+            legend.key.size = grid::unit(0.5, "inch")) +
+      facet_wrap(~new_name, scales = "free_x", nrow = 1) +
+      theme(strip.text.x = element_text(size = 20))
+  } else {
+    stop("Only bar plots are currently implemented")
+  }
+  if(!is.null(add_theme)) {
+    pt = pt + add_theme
+  }
+  return(pt)
+}
+
+  
+  
