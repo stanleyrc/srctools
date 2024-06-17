@@ -1168,7 +1168,6 @@ get_iso_fusions = function(bam,
   md.grl.gr = GRanges(md.grl.dt, seqlengths = hg_seqlengths())
   ## md.grl = rtracklayer::split(md.grl.gr, f = mcols(md.grl.gr)["grl.ix"])
   md.grl = rtracklayer::split(md.grl.gr, f = mcols(md.grl.gr)["order_id"])
-  
   if(!reannotate) {
     ##look for collapsed_group and collapsed_class if missing
     if(is.null(collapsed_group) | is.null(collapsed_class)) {
@@ -1569,6 +1568,7 @@ get_iso_fusions = function(bam,
       ## bps.dt[,start := start + 1]
       ## bps.dt[,end := start]
       ##
+      bps.dt[, seqnames := paste0("chr",seqnames)]
       bps.gr = GRanges(bps.dt[order(start)], seqlengths = hg_seqlengths()) %>% gr.chr
       
       ## md_potential_tr.gr2 = gUtils::gr.breaks(bp = potential.gtf.labels.sub,md_potential_tr.sub.gr)
@@ -2491,7 +2491,6 @@ get_ordered_fusions2 = function(bam,
   } else {
     fus.groups.dt = read_fusion_groups(breakpoints)
   }
-  
 ########################  
   ## md.dt = md.dt[width != 0,]
   md.gr = GRanges(md.dt,seqlengths = hg_seqlengths())
@@ -3101,6 +3100,7 @@ get_ordered_fusions2 = function(bam,
     md.gr3 = GRanges(md.all.dt2, seqlengths = hg_seqlengths())
     md.grl3 = rtracklayer::split(md.gr3, f = mcols(md.gr3)["qname"])
   } else {
+    browser()
     md.dt5 = order_fusion_breakpoint(fusion_groups.dt = fus.groups.dt, md.all.dt = md.dt4, cores = cores, pad = pad)
     md.dt5 = md.dt5[!(type %in% c("N","X", "S")),]
     md.gr2 = GRanges(md.dt5, seqlengths = hg_seqlengths())
@@ -3136,10 +3136,14 @@ get_ordered_fusions2 = function(bam,
 }
 
 ##
-order_fusion_breakpoint = function(fusion_groups.dt, md.all.dt, pad = 10, cores = 1) {
-      qnames.lst = fusion_groups.dt$qname %>% tstrsplit(., "_", keep = 1) %>% unique %>% unlist
-      md.all.dt[, qname_simple := tstrsplit(qname, "_", keep = 1)]
-      qnames.lst = qnames.lst[qnames.lst %in% md.all.dt$qname_simple]
+order_fusion_breakpoint = function(fusion_groups.dt, md.all.dt, pad = 10, pipeline = "pacbio", cores = 1) {
+  if(pipeline == "pacbio") {
+    qnames.lst = fusion_groups.dt$qname %>% tstrsplit(., "_", keep = 1) %>% unique %>% unlist
+    md.all.dt[, qname_simple := tstrsplit(qname, "_", keep = 1)]
+    qnames.lst = qnames.lst[qnames.lst %in% md.all.dt$qname_simple]
+  } else if (pipeline == "isoquant") {
+  }
+      browser()
       ## qnames.lst = qnames.lst[qnames.lst %in% md.all.dt$qname]
       md.lst = mclapply(qnames.lst, function(x) {
         sub.fus.dt = fusion_groups.dt[qname == x,.(row_number, chr1, start1, end1, chr2, start2, end2, id, score, strand1, strand2, info, qname_list, qname, CB, AC)]
