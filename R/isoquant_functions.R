@@ -488,16 +488,41 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       ## transcript_names = sapply(gene.gw$grl, function(x) x$transcript_name[1])
       ## gene.gw$set(name = transcript_names)
       ## add y values in order of abundance
-      message("Adding y values in order of abundance")
-      abundance_order.dt = data.table(count = (sapply(gene.gw$grl, function(x) x$count[[1]])))
+      message("Adding y values in order of abundance. Adding count for all samples and the grp_assignment.")
+      abundance_order.dt = data.table(count = (sapply(gene.gw$grl, function(x) x$count[[1]])), grp_assignment = (sapply(gene.gw$grl, function(x) x$grp_assignment[[1]])),transcript_name = (sapply(gene.gw$grl, function(x) x$transcript_name[[1]])), transcript_id = (sapply(gene.gw$grl, function(x) x$transcript_id[[1]])))
       abundance_order.dt[,current_order := 1:.N]
       abundance_order.dt[, max_count := sapply(count, function(x) {
         max(as.numeric(tstrsplit(x,",")))
-        })]
+      })]
       abundance_order.dt = abundance_order.dt[order(-max_count),]
       abundance_order.dt[, y_value := .N:1]
       abundance_order.dt = abundance_order.dt[order(current_order),]
       gene.gw$set(y = abundance_order.dt$y_value)
+      gene.gw$set(count = abundance_order.dt$max_count)
+      gene.gw$set(grp_assignment = abundance_order.dt$grp_assignment)
+      gene.gw$set(transcript_name = abundance_order.dt$transcript_name)
+      gene.gw$set(transcript_id = abundance_order.dt$transcript_id)
+      message("Adding assignment_events, assignment_type, exons_minus_ends, structural_category, final_grp_assignment, additional_info, and counts for each sample.")
+      gene.gw.dt = gene.gw$dt
+      cols_add = c("assignment_events", "assignment_type", "exons_minus_ends", "structural_category", "final_grp_assignment", "additional_info")
+      cols_add = c(cols_add,grep("^counts_",names(genes_reads.dt2),value = TRUE))
+      genes_reads.dt2_merge = genes_reads.dt2[,..cols_add] %>% unique
+      genes_reads.dt2_merge[,final_grp_assignment := paste0("GRP.",final_grp_assignment)]
+      genes_reads.dt2_merge = genes_reads.dt2_merge[final_grp_assignment %in% gene.gw.dt$grp_assignment,]
+      if(nrow(genes_reads.dt2_merge) == length(gene.gw)) {
+        set.dt = merge.data.table(gene.gw.dt[,.(walk.id,grp_assignment)], genes_reads.dt2_merge, by.x = "grp_assignment", by.y = "final_grp_assignment", all = TRUE)
+        set.dt = set.dt[order(walk.id),]
+        cols_add2 = names(set.dt)
+        cols_add2 = cols_add2[!(cols_add2 %in% c("walk.id","grp_assignment"))]
+        for(x in cols_add2) {
+          expr <- parse(text = paste0("gene.gw$set(", x, " = set.dt[['", x, "']])"))
+          eval(expr)
+        }
+        
+      } else {
+        warning("Genes_reads.dt2 unique values are not the same length as the number of walks. Extra annotations will not be added")
+      }
+      gene.gw = gene.gw[order(-count)]
     }
     return(list(gene.gw, genes_reads.dt2))
   } else {
