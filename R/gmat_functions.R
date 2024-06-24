@@ -36,6 +36,7 @@ gm2hicool = function(gm, #gmatrix to convert to .hic
     if(is.null(chrom_sizes)) {
         chrom_sizes = seqlengths(gm$gr) %>% si2gr %>% as.data.table
         chrom_sizes = chrom_sizes[,.(seqnames,end)]
+        chrom_sizes[, seqnames := gsub("chr","",seqnames)]
         chrom_file = paste0(hic_out,"_chromosome.sizes_temp.tsv")
         message(paste0("Writing temporary chromosome lengths to: ", chrom_file))
         fwrite(chrom_sizes, chrom_file, col.names = FALSE, sep = "\t")
@@ -43,6 +44,9 @@ gm2hicool = function(gm, #gmatrix to convert to .hic
         chrom_file = chrom_sizes
     }
     validPairs2hic(validPairs_path = temp_file, hic_out = hic_out, hic_res = hic_res, chrom_sizes = chrom_file)
+    if(!file.exists(hic_out)) {
+        stop("hic_out does not exist")
+    }
     if(is.null(mcool)) {
         message("mcool is NULL, will not convert to mcool")
     } else {
@@ -89,6 +93,7 @@ gm2ValidPairs = function(gm, #gmatrix object
     gr.dt[, seqnames := gsub("chr","",seqnames)]
     gr.dt[, id := 1:.N]
     gr.dt[, c("width","strand") := NULL]
+    gr.dt = gr.dt[,.(seqnames,start,end,id)]
     names(gr.dt) = c("seqnames.i","start.i", "end.i","id")
     gr.dt2 = copy(gr.dt)
     names(gr.dt2) = gsub(".i",".j",names(gr.dt2))
@@ -100,8 +105,8 @@ gm2ValidPairs = function(gm, #gmatrix object
     dt2[, str2 := 1]
     dt2[, frag1 := 0]
     dt2[, frag2 := 1]
-    dt3 = dt2[,.(str1, seqnames.i, start.i, end.i, frag1, str2, seqnames.j, start.j, end.j, frag2, value)]
-    dt3[, c("end.i","end.j") := NULL]
+    dt3 = dt2[,.(str1, seqnames.i, start.i, frag1, str2, seqnames.j, start.j, frag2, value)]
+    ## dt3[, c("end.i","end.j") := NULL]
     dt3 = dt3[order(seqnames.i,seqnames.j,start.i,start.j),]
     return(dt3)
 }
