@@ -1,23 +1,25 @@
 #function for getting the contacts of an event with other regions
 contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlengths = hg_seqlengths(),straw.cores=1, event.cores = 4,event_types = c("bfb","chromoplexy","chromothripsis","del","cpxdm","dm","dup","pyrgo","rigma","simple","tic","tyfonas"),add_event_event_contact_labels=FALSE, annotate_sum = TRUE, annotate_cn = TRUE, fill_missing_bins = TRUE) {
-                                        #maybe add ability to pad to events later??,pad = NULL
+    ##maybe add ability to pad to events later??,pad = NULL
     if(class(gg) == "character") {
         gg = readRDS(gg)
     }
     ## if("gGraph" %in% class(gg)) {
     ## }
-                                        #read in hic
+    ##read in hic
     if(hic_type == ".hic") {
         hic = GxG::straw(hic = hic,
                          res = res,
                          gr = gr_seqlengths,
                          mc.cores = straw.cores)
-    }
-    if(hic_type == ".mcool") {
+        message("Done reading in .hic")
+    } else if(hic_type == ".mcool") {
         hic = GxG::cooler(file = hic,
                     res = res,
                     gr = gr_seqlengths,
                     mc.cores = straw.cores)
+        message("Done reading in .mcool")
+    } else if (hic_type == "gm") {
     }
     sum_contacts = hic$dat$value %>% sum
     if(annotate_sum) {
@@ -51,6 +53,10 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
             ## gr.event1$type = events_unique.dt[x,]$type
             ## hic.gr = gr.val(hic.gr,gr.event1,c("event_type","footprint","type"))
             hic.gr = gr.val(hic.gr,gr.event1,"event_type")
+            event.filter.gr = hic.gr %Q% (!is.na(event_type))
+            if(length(event.filter.gr) == 0) {
+                return(NULL)
+            }
             event.filter.gr = hic.gr %Q% (event_type != "")
                                         #    hic.gr = hic.gr %Q% (event_type != "")
             ## hic_events.dt = as.data.table(hic.gr)[,.(seqnames,start, end, i,type, event_type,footprint)]
@@ -114,7 +120,8 @@ contacts_events = function(pair, res = 1e6, gg, hic, hic_type = ".hic",gr_seqlen
             events_contacts.dt = merge.data.table(events_contacts.dt, contacts_i_j2,by = "j")
         }
         if(annotate_cn) {
-            nodes.gr = as.data.table(gg$nodes$gr) %>% .[seqnames %in% paste0("chr",c(1:22,"X","Y")),] %>% GRanges(.,seqlengths = hg38_seq()) %>% gr.nochr
+            nodes.dt = as.data.table(gr.chr(gg$nodes$gr))
+            nodes.gr = nodes.dt %>% .[seqnames %in% paste0("chr",c(1:22,"X","Y")),] %>% GRanges(.,seqlengths = hg38_seq()) %>% gr.nochr
             events_contacts.dt = annotate_gmat_dt(events_contacts.dt, nodes.gr, "cn")
         }
             
@@ -232,3 +239,81 @@ annotate_gmat_dt = function(gmat_dt, annotate_gr, column, annotate.i = TRUE, ann
     }
 }
 
+
+## convert from contacts_events to oned tracks for pgv or gtrack
+contacts2_1D_track = function(contacts.dt,
+                              pairs, #with column complex and key set to get purity and ploidy
+                              cores = 4,
+                              ref = "hg38", #reference if return_type == "pgv"
+                              return_type = "pgv", #can be data.table or pgv which will return data.tables for uploading to pgv
+                              scale_factor = 1e5
+                              ) {
+    ## get the unique events present
+    unique_events.dt = contacts.dt[,.(event.numb,sample)] %>% unique
+    ## now sum 
+    contact.1d_lst = mclapply(1:nrow(unique_events.dt), function(x) {
+        event.dt = unique_events.dt[x,]
+        sub.dt = contacts.dt[sample == event.dt$sample & event.numb == event.dt$event.numb,]
+        sub.dt[, sum_by_i := sum(value), by = c("seqnames.i","start.i","end.i")]
+        sub.dt[, c("seqnames.j","start.j","end.j","cn.j","sum_j_contacts","j","value","id") := NULL]
+        ## dim(sub.dt)
+        sub.dt = unique(sub.dt)[order(i),]
+        return(sub.dt)
+    },mc.cores = cores)
+    oned.dt = rbindlist(contact.1d_lst)
+    ##
+    ## sum_unique.dt = oned.dt[,.(sample,sum_contacts)] %>% unique
+    ## sum_unique.dt[, scaled_sum2 := scale(sum_contacts, center = 1)]
+    ## sum unique events
+    ## sum_events.dt = oned.dt[,.(sample,event.numb,sum_all_j_contacts)] %>% unique
+    ## sum_events.dt[, sum_all_j_scaled := scale(sum_all_j_contacts, center = 1)]
+    ## sum_events.dt = merge.data.table(sum_events.dt,sum_unique.dt, by = "sample")
+    ## ##
+    ## oned.dt = merge.data.table(oned.dt, sum_events.dt[,.(sample, event.numb, scaled_sum2, sum_all_j_scaled)], by = c("sample","event.numb"))
+
+    ## ## add purity and ploidy
+    ## oned.dt2[, event_contact_fraction := (sum_all_j_contacts / sum_contacts)]
+    ##get purity and ploidy for all to then calculate relative copynumber
+    oned.dt2 = oned.dt[event_type.i != event_type.j | is.na(event_type.i),]
+    samples.lst = oned.dt2$sample %>% unique
+    purs.lst = mclapply(samples.lst, function(pair) {
+        gg = readRDS(pairs[pair,complex])
+        return(data.table(sample = pair, purity = gg$meta$purity, ploidy = gg$meta$ploidy))
+    },mc.cores = cores)
+    purs.dt = rbindlist(purs.lst)
+    oned.dt2 = merge.data.table(oned.dt2,purs.dt, by = "sample", all.x = TRUE)
+    ##
+    oned.dt2[, cn.rel.i := (cn.i * purity + 2 * (1 - purity)) / (2 * (1-purity) + purity * ploidy)]
+    ## now create a pgv upload temp file for each event
+    sub.lst = mclapply(1:nrow(unique_events.dt), function(x) {
+        event.dt = unique_events.dt[x,]
+        sub.dt = oned.dt2[sample == event.dt$sample & event.numb == event.dt$event.numb,]
+        sub.dt2 = sub.dt[,.(seqnames.i,start.i,end.i,event.numb,sum_by_i,sample, cn.i,sum_all_j_contacts)] %>% unique
+        sub.dt2[,sum_by_i_cn_norm := (sum_by_i / (cn.i + 1))]
+        sub.dt2[,sum_by_i_cn_norm_sum_norm := scale_factor * ((sum_by_i / sum_all_j_contacts) / (cn.i + 1))]
+        sub.dt2[,sum_by_i_cn_norm_sum_norm_log := log(sum_by_i_cn_norm_sum_norm + 1)]
+        names(sub.dt2) = c("seqnames", "start", "end", "event.numb", "sum_by_i", "sample", "cn.i", "sum_all_j_contacts","sum_by_i_cn_norm","sum_by_i_cn_norm_sum_norm","sum_by_i_cn_norm_sum_norm_log")
+        return(sub.dt2)
+    }, mc.cores = cores)
+    sub.dt = rbindlist(sub.lst)
+    if(return_type == "data.table") {
+        return(sub.dt)
+    } else if (return_type == "pgv") {
+        arrow.add.lst = mclapply(1:nrow(unique_events.dt), function(x) {
+            event.dt = unique_events.dt[x,]
+            sub.dt2 = sub.dt[sample == event.dt$sample & event.numb == event.dt$event.numb,]
+            sub.dt2[, seqnames := as.character(seqnames)]
+            sub.gr = GRanges(sub.dt2, seqlengths = hg_seqlengths(chr = FALSE))
+            arrow.add = Skilift::arrow_temp(patient_id = event.dt$sample,
+                                            order = 30,
+                                            x = list(sub.gr),
+                                            ref = ref,
+                                            field = "sum_by_i_cn_norm",
+                                            title = paste0(event.dt$event.numb, " Sum by i relative CN Normalized"),
+                                            overwrite = FALSE)
+            return(arrow.add)
+        },mc.cores = cores)
+        arrow.add.dt = rbindlist(arrow.add.lst)
+        return(arrow.add.dt)
+    }
+}

@@ -7,6 +7,8 @@ getski = function(web = paste0("/gpfs/commons/groups/imielinski_lab/mskiweb/",Sy
 
 
 
+
+
 ## getPGV = function(web = "/gpfs/commons/groups/imielinski_lab/mskiweb/sclarke/", pgv_sub_folder = "pgv/", json_file = paste0(web,pgv_sub_folder, "/public/datafiles.json"), datadir = paste0(web,pgv_sub_folder, "/public/data/"), settings = paste0(web,pgv_sub_folder, "/public/settings.json"), higlass.list = list(endpoint = "https://higlass01.nygenome.org/")) {
 ##     ## build.dir = paste0(web,pgv_sub_folder, "/public/settings.json")
 ##     pgv = PGVdb$new(datafiles_json_path = json_file,datadir = datadir,settings = settings,higlass_metadata = higlass.list)
@@ -60,7 +62,8 @@ hic_res = function(hic) {
     old_options = options("scipen", "digits")
     options(scipen = -999, digits = 7)
                                         #get resolutions
-    reses = strawr::readHicBpResolutions(hichip.pairs[pair, contact.matrix]) %>% sort() %>% signif(., digits = 5)
+    hic = normalizePath(hic)
+    reses = strawr::readHicBpResolutions(hic) %>% sort() %>% signif(., digits = 5)
     on.exit(options(old_options))
     return(print(reses))
 }
@@ -295,16 +298,16 @@ easy.cut = function(x, start = 1e3, end = -start, step = 1e2) {
 
 ## #functions for controlling higlass server :
 ##                                         #list tilesets
-## list_tiles = function() {
-##     cmd = ("sh ~/Projects/higlass_serv/UPLOAD_SCRIPTS/list_tilesets.sh")
-##     tiles.dt = system(cmd,intern=T)
-##     tiles.dt2 = rbindlist(lapply(4:length(tiles.dt),function(x) {
-##         as.data.table(t(as.data.table(unlist(strsplit(gsub("]","",tiles.dt[x])," ")))))
-##     }))
-##     tiles.dt3 = tiles.dt2[,c(4,6,8)]
-##     colnames(tiles.dt3) = c("tile","type","uuid")
-##     return(tiles.dt3)
-## }
+list_tiles = function() {
+    cmd = ("sh ~/Projects/higlass_serv/UPLOAD_SCRIPTS/list_tilesets.sh")
+    tiles.dt = system(cmd,intern=T)
+    tiles.dt2 = rbindlist(lapply(4:length(tiles.dt),function(x) {
+        as.data.table(t(as.data.table(unlist(strsplit(gsub("]","",tiles.dt[x])," ")))))
+    }))
+    tiles.dt3 = tiles.dt2[,c(4,6,8)]
+    colnames(tiles.dt3) = c("tile","type","uuid")
+    return(tiles.dt3)
+}
 
 ##                                         #upload bigwigs
 ## upload_bigwigs = function(dt,bigwig.col,uuid.col,cores) {
@@ -316,15 +319,15 @@ easy.cut = function(x, start = 1e3, end = -start, step = 1e2) {
 ##     return(upload_higlass_dt)
 ## }
 
-##                                         #delete tiles
-## delete_tiles = function(dt,uuid.col,cores) {
-##     dt[,delete := paste0("sh ~/Projects/higlass_serv/UPLOAD_SCRIPTS/delete_tileset.sh ",dt[[uuid.col]])]
-##     delete_higlass_dt = mclapply(1:nrow(dt),function(pair) {
-##         cmd=(dt$delete[pair])
-##         system(cmd,intern=T)
-##     },mc.cores=cores)
-##     return(delete_higlass_dt)
-## }
+                                        #delete tiles
+delete_tiles = function(dt,uuid.col,cores) {
+    dt[,delete := paste0("sh ~/Projects/higlass_serv/UPLOAD_SCRIPTS/delete_tileset.sh ",dt[[uuid.col]])]
+    delete_higlass_dt = mclapply(1:nrow(dt),function(pair) {
+        cmd=(dt$delete[pair])
+        system(cmd,intern=T)
+    },mc.cores=cores)
+    return(delete_higlass_dt)
+}
 
 ##                                         #upload chromsizes file
 ## upload_chromsizes = function(chrom.file) {
@@ -439,3 +442,74 @@ easy.cut = function(x, start = 1e3, end = -start, step = 1e2) {
 ## }
 
 
+
+#' @name backup_casereports
+#' @title backup_casereports
+#' @description
+#' Will back up casereports based on a data folder location and file names to backup. This does NOT backup the common folder which can easily be backed up
+#'
+#' @param case_reports_data_folder file with all of the data
+#' @param backup_folder folder to copy the files too, can be a new path
+#' @param files which files within each patient to copy
+#' @param filter_patients Use to only copy some patients over
+#' @param verbose messages for every mkdir and copy
+#' @param cores number of cores to use for creating directories and copying files
+#' @return NULL
+#' @export
+#' @author Stanley Clarke
+backup_skilift = function(case_reports_data_folder,
+                          backup_folder,
+                          files = "metadata.json",
+                          filter_patients = NULL,
+                          verbose = FALSE,
+                          cores = 1) {
+    ## add extra slash in case missing
+    case_reports_data_folder = paste0(case_reports_data_folder,"/")
+    ## get the files
+    files.lst = list.files(case_reports_data_folder)
+    files.lst = grep("data",files.lst,invert=TRUE, value = TRUE) #Filters out a subfolder called data that is present in our instance
+    meta.dt = data.table(sample_folders = paste0(case_reports_data_folder,files.lst,"/"), patient_id = files.lst)
+    ## filter patients to copy
+    if(!is.null(filter_patients)) {
+        meta.dt = meta.dt[patient_id %in% filter_patients,]
+    }
+    ## add columns for all of the files
+    for(x in files) {
+        meta.dt[, (x) := paste0(sample_folders,x)]
+    }
+    meta.dt2 = copy(meta.dt)
+    meta.dt2[, sample_folders := NULL]
+    ## convert from wide to long format to copy files that exist
+    melt.dt = melt.data.table(data = meta.dt2, id.vars = "patient_id", value.name = "file")
+    melt.dt = melt.dt[file.exists(file),]
+    ## make all of the directories necessary
+    backup_folder = normalizePath(backup_folder,mustWork = FALSE) %>% paste0(.,"/")
+    if(!dir.exists(backup_folder)) {
+        cmd = paste0("mkdir -p ", backup_folder)
+        message(paste0('Making directory ', backup_folder))
+        system(cmd)
+    }
+    ## now make all of the subfolders
+    melt.dt[, new_folders := paste0(backup_folder, patient_id,"/")]
+    new_folders = unique(melt.dt$new_folders)
+    mclapply(new_folders, function(x) {
+        cmd = paste0("mkdir -p ", x)
+        if(verbose) {
+            message(paste0('Making directory ', x))
+        }
+        system(cmd)
+        return(NULL)
+    }, mc.cores = cores)
+    ## copy all folders
+    mclapply(1:nrow(melt.dt), function(x) {
+        sub.dt = melt.dt[x,]
+        cmd = paste0("cp ", sub.dt$file," ", sub.dt$new_folders)
+        if(verbose) {
+            message(cmd)
+        }
+        system(cmd)
+        return(NULL)
+    }, mc.cores = cores)
+    message(paste0("Copied all ",paste0(files,collapse = ", ")," to ", backup_folder))
+    return(NULL)
+}

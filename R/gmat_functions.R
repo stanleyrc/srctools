@@ -11,9 +11,9 @@ gm2hicool = function(gm, #gmatrix to convert to .hic
                      chrom_sizes = NULL, # if null will create one in the same folder from the seqlengths of the gr in the gm
                      res = NULL,        #if NULL will try to get the smallest res in the .hic file
                      hic_res = NULL,           #list of resolutions for the .hic file, mcool will be the same if not specified, will be converted to an integer
+                     mem = 8, #memory for java for validPairs2hic
                      juicer_jar = "~/modules/Juicer/juicer/scripts/juicer_tools_linux_0.8.jar",        #path to jar for juicer
                      python_path = "/gpfs/commons/home/sclarke/miniconda3/envs/hic2cool/bin/python3.12" #python path with hic2cool installed
-                     
                      ) {
     ## get res for gm2ValidPairs and validPairs2hic
     if(is.null(res)) {
@@ -43,7 +43,7 @@ gm2hicool = function(gm, #gmatrix to convert to .hic
     } else { #assume the chromosome sizes is a tsv of chromosome sizes
         chrom_file = chrom_sizes
     }
-    validPairs2hic(validPairs_path = temp_file, hic_out = hic_out, hic_res = hic_res, chrom_sizes = chrom_file)
+    validPairs2hic(validPairs_path = temp_file, hic_out = hic_out, hic_res = hic_res, chrom_sizes = chrom_file, juicer_jar = juicer_jar, mem = mem)
     if(!file.exists(hic_out)) {
         stop("hic_out does not exist")
     }
@@ -107,6 +107,8 @@ gm2ValidPairs = function(gm, #gmatrix object
     dt2[, frag2 := 1]
     dt3 = dt2[,.(str1, seqnames.i, start.i, frag1, str2, seqnames.j, start.j, frag2, value)]
     ## dt3[, c("end.i","end.j") := NULL]
+    dt3[, seqnames.i := factor(seqnames.i,levels = c(1:22,"X","Y"))]
+    dt3[, seqnames.j := factor(seqnames.j,levels = c(1:22,"X","Y"))]
     dt3 = dt3[order(seqnames.i,seqnames.j,start.i,start.j),]
     return(dt3)
 }
@@ -116,7 +118,9 @@ validPairs2hic = function(validPairs_path, #path to valid pairs tsv
                           hic_out,         #path to create the .hic file at
                           res,             #resolution of the .hic file-necessary
                           hic_res = NULL,  #resolutions to output
-                          chrom_sizes = NULL #chromosome sizes tsv, format: chromosome length
+                          chrom_sizes = NULL, #chromosome sizes tsv, format: chromosome length
+                          juicer_jar,         #jar for juicer
+                          mem = 8 #memory for java
                           ) {
     ## make seqlengths file if NULL
     if(is.null(chrom_sizes)) {
@@ -124,6 +128,8 @@ validPairs2hic = function(validPairs_path, #path to valid pairs tsv
         chrom_file = paste0(hic_out,"_chromosome.sizes_temp.tsv")
         message(paste0("Writing temporary chromosome lengths to: ", chrom_file))
         fwrite(chrom_sizes, chrom_file, col.names = FALSE, sep = "\t")
+    } else {
+        chrom_file = chrom_sizes
     }
     if(is.null(hic_res)) {
         hic_res = res * (10^(0:6))
@@ -135,9 +141,11 @@ validPairs2hic = function(validPairs_path, #path to valid pairs tsv
     if(length(hic_res) > 1) {
         hic_res = paste0(hic_res, collapse = ",")
     }
-    message("Converting ", temp_file, " to .hic at ", hic_out)
+    message("Converting ", validPairs_path, " to .hic at ", hic_out)
     ## now convert to .hic
-    cmd = paste0("java -Xmx2g -jar ",juicer_jar, " pre -r ",hic_res, " ",temp_file," ", hic_out, " ",chrom_file," -n")
+    ## cmd = paste0("java -Xmx2g -jar ",juicer_jar, " pre -r ",hic_res, " ",validPairs_path," ", hic_out, " ",chrom_file," -n")
+    cmd = paste0("java -Xmx",mem,"g -jar ",juicer_jar, " pre -r ",hic_res, " ",validPairs_path," ", hic_out, " ",chrom_file," -n")
+    message(paste0("Running ",cmd))
     system(command=cmd,intern=TRUE)
     message("Done converting .hic")
 }
@@ -161,4 +169,18 @@ hic2mcool = function(hic, #input .hic file
     ## Run the command using system()
     output = system(cmd2, intern = TRUE)
 }
+
+## cannot upload coolers through the api to higlass at the moment but this works!
+upload_cooler = function(path, name, uuid = NULL) {
+    if(is.null(uuid)) {
+        uuid = paste0(name, "_",sample(1:1e7,size = 1))
+    }
+    cmd <- paste0('ssh -t higlass01.nygenome.org  "module purge ; module load higlass-server/1.7.2 ; cd /opt/software/higlass-server/higlass-server-1.7.2/higlass-server ; \n /opt/software/higlass-server/higlass-server-1.7.2/bin/python /opt/software/higlass-server/higlass-server-1.7.2/higlass-server/manage.py ingest_tileset --filename ', path, ' --filetype cooler --datatype matrix --name ', name, ' --uid ',uuid,'"')
+    system(cmd,intern=T)
+}
+## upload_cooler(mcool, name = "june_upload_cooler_test")
+
+
+
+
 
