@@ -246,7 +246,8 @@ contacts2_1D_track = function(contacts.dt,
                               cores = 4,
                               ref = "hg38", #reference if return_type == "pgv"
                               return_type = "pgv", #can be data.table or pgv which will return data.tables for uploading to pgv
-                              scale_factor = 1e5
+                              scale_factor = 1e5,
+                              remove_self_amplicon_contacts = FALSE
                               ) {
     ## get the unique events present
     unique_events.dt = contacts.dt[,.(event.numb,sample)] %>% unique
@@ -274,7 +275,14 @@ contacts2_1D_track = function(contacts.dt,
     ## ## add purity and ploidy
     ## oned.dt2[, event_contact_fraction := (sum_all_j_contacts / sum_contacts)]
     ##get purity and ploidy for all to then calculate relative copynumber
-    oned.dt2 = oned.dt[event_type.i != event_type.j | is.na(event_type.i),]
+    if(remove_self_amplicon_contacts) {
+        message("remove_self_amplicon_contacts is TRUE, removing self amplicon contacts")
+        oned.dt2 = oned.dt[event_type.i != event_type.j | is.na(event_type.i),] 
+    } else {
+        message("remove_self_amplicon_contacts is FALSE, not removing self amplicon contacts")
+        oned.dt2 = oned.dt
+    }
+    ## 
     samples.lst = oned.dt2$sample %>% unique
     purs.lst = mclapply(samples.lst, function(pair) {
         gg = readRDS(pairs[pair,complex])
