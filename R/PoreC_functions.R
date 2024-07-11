@@ -39,3 +39,56 @@ intersect_parq = function(parquet.gr,
         return(final.gr)
     }
 }
+
+
+##jamesons cocount function with a unique
+jameson_cocount = function(events, bins = disjoin(events), by = names(values(events))[1], weight = NULL, frac = FALSE, full = FALSE, fill = 0, na.rm = TRUE)
+{
+  if (length(events)==0)
+    return(gM(gr = bins, full = full, fill = fill, agg.fun = agg.fun, na.rm = na.rm))
+  
+  if (is.na(by))
+    stop('by must be specified and a metadata column of events GRanges')
+           
+  if (!(by %in% names(values(events))))
+    stop('by must be a metadata column of events GRanges')
+
+  events$group = values(events)[[by]]
+  if (!is.null(weight))
+    tmp = gr2dt(events[, c("group", weight)] %*% bins)
+  else
+    tmp = gr2dt(events[, c("group")] %*% bins)
+
+  if (nrow(tmp)>0)
+    tmp = tmp[!is.na(group), ]
+
+  if (!nrow(tmp))
+    {
+      if (length(bins)>0)
+        return(gM(bins))
+      else
+        return(gM())
+    }
+
+  if (!is.null(weight))
+    {
+      tmp$weight = tmp[[weight]]
+    }
+  else if (frac)
+    tmp[, weight := width/sum(width), by = group]
+  else
+    tmp[, weight := 1, by = group]
+  
+  tmp = tmp[, .(bid = subject.id, group = as.integer(factor(group)), weight)]
+
+####what if we dedupe here
+  ##browser()
+  tmp = unique(tmp, by=c('bid','group'))
+  
+  ## sum weights inside bin pairs that share a group
+  dat = merge(tmp, tmp, by = c('group'), allow.cartesian = TRUE)[, .(value = sum(weight.x * weight.y)), by = .(i = bid.x, j = bid.y)]
+###get rid of self edges how about that
+##  dat = dat[i != j]
+  
+  return(gM(bins, dat, full = full, fill = fill, na.rm = na.rm, agg.fun = sum))
+}

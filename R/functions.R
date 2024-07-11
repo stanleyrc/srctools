@@ -5,7 +5,89 @@ getski = function(web = paste0("/gpfs/commons/groups/imielinski_lab/mskiweb/",Sy
     return(pgv)
 }
 
+## function to duplicate a sample in skilift to a new name
+duplicate_samples = function(skilift, #pgv object
+                             current_names, #names in column patient.id
+                             new_names,     #new names for duplicated patients
+                             grep_title = NULL, #vector to grep the title column with
+                             update_object = FALSE, #if TRUE will automatically update the json file
+                             cores = 1          #cores for copying files and making directories
+                             ) {
+    ## get the plots that have the current_names
+    plots_dup.dt = skilift$plots[patient.id %in% current_names,]
+    ##
+    if(!is.null(grep_title)) {
+        grep1 = paste0(grep_title, collapse = "|")
+        plots_dup.dt = plots_dup.dt[grepl(grep1,title),]
+    }
+    ## get the source folder and sample
+    plots_dup.dt[, source_folder := paste0(skilift$datadir,patient.id)]
+    plots_dup.dt[!is.na(source), source_file := paste0(source_folder,"/",source)]
+    ## match current names with new names
+    names.dt = data.table(current_names = current_names, new_names = new_names)
+    plots_dup.dt = merge.data.table(plots_dup.dt, names.dt, by.x = "patient.id", by.y = "current_names", all.x= TRUE)
+    ## now get dest folder and file
+    plots_dup.dt[, dest_folder := paste0(skilift$datadir,new_names)]
+    plots_dup.dt[!is.na(source), dest_file := paste0(dest_folder,"/",source)]
+    ## now make dest folders
+    dest_folders = unique(plots_dup.dt$dest_folder)
+    if(any(dir.exists(dest_folders))) {
+        stop("At least one of the new names folders already exists. Stopping so you do not overwrite")
+    }
+    cmd = paste0("mkdir ", dest_folders, "/") %>% normalizePath(.,mustWork = FALSE)
+    mclapply(1:length(cmd), function(x) {
+        cmd.sub = cmd[x]
+        system(command = cmd.sub)
+    }, mc.cores = cores)
+    ## now copy the files 
+    files_dup.dt = plots_dup.dt[!is.na(dest_file) & !is.na(source_file),][,.(source_file, dest_file)]
+    mclapply(1:nrow(files_dup.dt), function(x) {
+        cmd = paste0("cp ", files_dup.dt[x,]$source_file, " ", files_dup.dt[x,]$dest_file)
+        system(command = cmd)
+    }, mc.cores = cores)
+    ## now add the ones that successfully copied
+    add_plots = plots_dup.dt[file.exists(dest_file) | is.na(dest_file),]
+    add_plots[, c("patient.id", "source_folder", "source_file", "dest_folder", "dest_file") := NULL]
+    names(add_plots) = gsub("new_names","patient.id",names(add_plots))
+    skilift$plots = rbind(skilift$plots, add_plots, fill = TRUE)
+    ## now add metadata
+    old_meta_data = skilift$metadata[patient.id %in% current_names,]
+    old_meta_data = merge.data.table(old_meta_data,names.dt, by.x = "patient.id", by.y = "current_names", all.x= TRUE)
+    old_meta_data[, patient.id := NULL]
+    new_meta_data = copy(old_meta_data)
+    names(new_meta_data) = gsub("new_names","patient.id",names(new_meta_data))
+    skilift$metadata = rbind(skilift$metadata, new_meta_data, fill = TRUE)
+    ## update object if true
+    if(update_object) {
+        skilift$update_datafiles_json()
+    }
+    return(skilift)
+}
 
+## a little janky because I could not figure out how to mark with column_in_edges, the name in nodes after is called column_in_edges but then you can duplicate that column to whatever name you want
+## gg2 = mark_nodes_from_edges2(gg, "merged_id")
+## gg2$nodes$mark(merged_id = gg$nodes$dt$column_in_edges)
+mark_nodes_from_edges = function(gg, column_in_edges) {
+    column_sym = as.symbol(column_in_edges)
+    mark_nodes.dt = gg$edges$dt[!is.na(eval(column_sym)), .(n1, n2, value = eval(column_sym))]
+    ##make separate data.tables for n1 and n2
+    mark_nodes.dt1 = mark_nodes.dt[, .(node.id = n1, value)]
+    mark_nodes.dt2 = mark_nodes.dt[, .(node.id = n2, value)]
+    ## combine
+    mark_nodes.dt = rbind(mark_nodes.dt1, mark_nodes.dt2) %>% unique()
+    ## combine the values of the marked column
+    mark_nodes.dt[, mark_combined := paste0(unique(value), collapse = ","), by = "node.id"]
+    mark_nodes.dt = mark_nodes.dt[, .(node.id, mark_combined)] %>% unique()
+    ## make this dt match the data.table for nodes
+    mark_nodes.dt2 = merge.data.table(gg$nodes$dt[,.(node.id)], mark_nodes.dt, by = "node.id", all.x = TRUE)
+
+    if(nrow(gg$nodes$dt) == nrow(mark_nodes.dt2)) {
+        gg$nodes$mark(column_in_edges = mark_nodes.dt2$mark_combined)
+    } else {
+        stop("Something is wrong! The length of the $nodes is not the same length as mark_nodes data.table.")
+    }
+    return(gg)
+}
 
 
 
