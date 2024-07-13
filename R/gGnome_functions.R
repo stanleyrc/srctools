@@ -4,20 +4,17 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
                     seqlengths = NULL, #if seqlengths are provided and fix == TRUE, the these seqlengths will be used instead of hg_seqlengths
                     cores = 1         #number of cores for generating the individual graphs
                     ) {
-    ## fix the seqlengths if specified so there are not nodes on extra chromosomes that will only be added for one sample
-    if(fix & is.null(seqlengths)) {
-        gg1$fix(seqlengths = hg_seqlengths(chr = FALSE))
-        gg2$fix(seqlengths = hg_seqlengths(chr = FALSE))
-    } else if (fix & !is.null(seqlengths)) {
-        gg1$fix(seqlengths = hg_seqlengths(seqlengths = seqlengths, chr = FALSE))
-        gg2$fix(seqlengths = hg_seqlengths(seqlengths = seqlengths, chr = FALSE))
-    }
-    number_ggs = length(ggs)
-    ## add ids to the graphs before concatenating
+    ## add ids to the graphs before concatenating and fix if specified
     ggs = mclapply(1:length(ggs), function(x) {
         new_gg = ggs[[x]]$copy
+        ##this allows the gg_new_nodes function to stand on it's own and not require a value for which graph it is (graph.id in gg_new_nodes) - maybe that should be a requirement?
         new_gg$nodes$mark(ggraph_id = as.character(x))
         new_gg$edges$mark(ggraph_id = as.character(x))
+        if(fix & is.null(seqlengths)) {
+            new_gg$fix(seqlengths = hg_seqlengths(chr = FALSE))
+        } else if (fix & !is.null(seqlengths)) {
+            new_gg$fix(seqlengths = hg_seqlengths(seqlengths = seqlengths, chr = FALSE))
+        }
         return(new_gg)
     }, mc.cores = cores)
     ## concatenate and mark
@@ -25,9 +22,8 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
     merged.gg$nodes$mark(node_disjoin_id = as.character(1:length(merged.gg$nodes)))
     merged.gg$edges$mark(edge_disjoin_id = as.character(1:length(merged.gg$edges)))
     disjoin.gg = merged.gg$copy$disjoin()
-
     ## now get the individual graphs from the disjoin
-    ggs.new.lst = mclapply(1:number_ggs, function(x) {
+    ggs.new.lst = mclapply(1:length(ggs), function(x) {
         ##run function to lift over edges to new node ids
         gg2 = gg_new_nodes(gg = ggs[[x]], disjoin.gg = disjoin.gg, merged.gg = merged.gg)
         return(gg2)
