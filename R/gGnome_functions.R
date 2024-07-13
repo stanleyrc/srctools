@@ -4,7 +4,6 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
                     seqlengths = NULL, #if seqlengths are provided and fix == TRUE, the these seqlengths will be used instead of hg_seqlengths
                     cores = 1         #number of cores for generating the individual graphs
                     ) {
-    ## make sure not to modify the original object
     ## fix the seqlengths if specified so there are not nodes on extra chromosomes that will only be added for one sample
     if(fix & is.null(seqlengths)) {
         gg1$fix(seqlengths = hg_seqlengths(chr = FALSE))
@@ -13,7 +12,6 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
         gg1$fix(seqlengths = hg_seqlengths(seqlengths = seqlengths, chr = FALSE))
         gg2$fix(seqlengths = hg_seqlengths(seqlengths = seqlengths, chr = FALSE))
     }
-    ## browser()
     number_ggs = length(ggs)
     ## add ids to the graphs before concatenating
     ggs = mclapply(1:length(ggs), function(x) {
@@ -31,17 +29,15 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
     ## now get the individual graphs from the disjoin
     ggs.new.lst = mclapply(1:number_ggs, function(x) {
         ##run function to lift over edges to new node ids
-        gg2 = gg_new_nodes(gg = ggs[[x]], merged_junctions = merged.jj, new_nodes = gn.gr, disjoin.gg = disjoin.gg, node_id_col = "node_id_temp", merged.gg = merged.gg)
+        gg2 = gg_new_nodes(gg = ggs[[x]], disjoin.gg = disjoin.gg, merged.gg = merged.gg)
         return(gg2)
     }, mc.cores = cores)
     return(ggs.new.lst)
 }
 
+
 gg_new_nodes = function(gg,
-                        new_nodes,
-                        node_id_col = "node.id",
                         disjoin.gg, 
-                        merged_junctions = NULL,
                         merged.gg) {
     ## junctions from this specific ggraph
     junc.jj = gg$junctions
