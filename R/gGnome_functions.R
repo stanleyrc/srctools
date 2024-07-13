@@ -39,10 +39,6 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
 gg_new_nodes = function(gg,
                         disjoin.gg, 
                         merged.gg) {
-    ## junctions from this specific ggraph
-    junc.jj = gg$junctions
-    ## browser()
-    ## fresh attempt with ids from before
     disjoin.gg2 = disjoin.gg$copy
     ## add which parent graph based on the ggraph_id
     ggraph.id = gg$dt$ggraph_id %>% unique
