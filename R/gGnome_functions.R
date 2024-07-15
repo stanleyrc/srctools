@@ -1,13 +1,19 @@
 ## function to merge ggraphs
-merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same length vector
-                    fix = FALSE, #whether to fix the seqlengths of the ggraph so that there are not nodes on non standard chromosomes in one graphs
-                    seqlengths = NULL, #if seqlengths are provided and fix == TRUE, the these seqlengths will be used instead of hg_seqlengths
+pan_gg = function(ggs, #list of ggraphs to merge- will return the same length vector. Can be gGraphs or paths to ggraphs
+                          fix = FALSE, #whether to fix the seqlengths of the ggraph so that there are not nodes on non standard chromosomes in one graphs
+                          return_disjoin = FALSE,
+                  seqlengths = NULL, #if seqlengths are provided and fix == TRUE, the these seqlengths will be used instead of hg_seqlengths
+                  fixloose = TRUE, #Primarily for debugging purposes
                     cores = 1         #number of cores for generating the individual graphs
-                    ) {
+                  ) {
     ## add ids to the graphs before concatenating and fix if specified
     ggs = mclapply(1:length(ggs), function(x) {
-        new_gg = ggs[[x]]$copy
-        ##this allows the gg_new_nodes function to stand on it's own and not require a value for which graph it is (graph.id in gg_new_nodes) - maybe that should be a requirement?
+        if(inherits(ggs[[x]],"character")) {
+            new_gg = readRDS(ggs[[x]])
+        } else if (inherits(ggs[[x]], "gGraph")) {
+            new_gg = ggs[[x]]$copy
+        }
+        ##marking allows the gg_new_nodes function to stand on it's own and not require a value for which graph it is (graph.id in gg_new_nodes) - maybe that should be a requirement?
         new_gg$nodes$mark(ggraph_id = as.character(x))
         new_gg$edges$mark(ggraph_id = as.character(x))
         if(fix & is.null(seqlengths)) {
@@ -25,16 +31,21 @@ merge_gg_nodes = function(ggs, #list of ggraphs to merge- will return the same l
     ## now get the individual graphs from the disjoin
     ggs.new.lst = mclapply(1:length(ggs), function(x) {
         ##run function to lift over edges to new node ids
-        gg2 = gg_new_nodes(gg = ggs[[x]], disjoin.gg = disjoin.gg, merged.gg = merged.gg)
+        gg2 = gg_new_nodes(gg = ggs[[x]], disjoin.gg = disjoin.gg, merged.gg = merged.gg, fixloose = fixloose)
         return(gg2)
     }, mc.cores = cores)
-    return(ggs.new.lst)
+    if(!return_disjoin) {
+        return(ggs.new.lst)
+    } else {
+        return(list(ggs.new.lst,disjoin.gg))
+    }
 }
 
 
 gg_new_nodes = function(gg,
                         disjoin.gg, 
-                        merged.gg) {
+                        merged.gg,
+                        fixloose = TRUE) {
     disjoin.gg2 = disjoin.gg$copy
     ## add which parent graph based on the ggraph_id
     ggraph.id = gg$dt$ggraph_id %>% unique
@@ -49,8 +60,10 @@ gg_new_nodes = function(gg,
     disjoin.sub.dt = disjoin.gg2$nodes$dt[,.(node_disjoin_id,node.id)]
     disjoin.sub.dt = disjoin.sub.dt[, .(node_disjoin_id = unlist(strsplit(node_disjoin_id, ","))), by = node.id]
     disjoin.cn.dt = merge.data.table(cn.dt, disjoin.sub.dt, by = "node_disjoin_id", all.x = TRUE)
-    ## mark the cn
-    disjoin.cn.dt = disjoin.cn.dt[order(node.id)]
+    ## mark the node cn
+    node_order = disjoin.gg2$nodes[node.id %in% disjoin.cn.dt$node.id]$dt$node.id
+    disjoin.cn.dt[, node_factor := factor(node.id, levels = node_order)] #have to get nodes in the same order
+    disjoin.cn.dt = disjoin.cn.dt[order(node_factor),]
     disjoin.gg2$nodes[node.id %in% disjoin.cn.dt$node.id,]$mark(cn = disjoin.cn.dt$cn)
     #######################################################
     ## get the copy number of the edges from the parent ids
@@ -71,11 +84,75 @@ gg_new_nodes = function(gg,
     edge.ref.dt = merge.data.table(edge.ref.dt,disjoin.gg2$nodes$dt[,.(n1 = node.id,n1.cn = cn)], by = "n1")
     edge.ref.dt = merge.data.table(edge.ref.dt,disjoin.gg2$nodes$dt[,.(n2 = node.id,n2.cn = cn)], by = "n2")
     edge.ref.dt[, cn := ifelse(n1.cn == n2.cn, n1.cn, NA)]
+    ## have to get it in the same order
+    edge_order = disjoin.gg2$edges[edge.id %in% edge.ref.dt$edge.id]$dt$edge.id
+    edge.ref.dt[, edge_factor := factor(edge.id, levels = edge_order)]
+    edge.ref.dt = edge.ref.dt[order(edge_factor),]
     ## mark these reference edges
     disjoin.gg2$edges[edge.id %in% edge.ref.dt$edge.id]$mark(cn = edge.ref.dt$cn)
-    disjoin.gg3 = loosefix(disjoin.gg2$copy)
+    if(fixloose) {
+        disjoin.gg3 = loosefix(disjoin.gg2$copy)
+    } else {
+        disjoin.gg3 = disjoin.gg2$copy
+    }
     return(disjoin.gg3)
 }
+
+## function to compare cn of two ggs outputted by pan_gG
+markdiff_pan_gg = function(ggs,
+                          type = "pairwise", #can be pairwise if just comparing two samples, multi if more but have to have a reference sample
+                          reference_sample = NULL  #if type = multi, then the reference sample is the sample that is subtracted from
+                       ) {
+    if(type == "pairwise") {
+        ## nodes
+        nodes.gr1 = ggs[[1]]$copy$nodes$gr
+        nodes.gr2 = ggs[[2]]$copy$nodes$gr
+        nodes.dt1 = gr2dt(nodes.gr1)
+        nodes.dt2 = gr2dt(nodes.gr2)
+        merge.nodes.dt = merge.data.table(nodes.dt1, nodes.dt2, by = "node.id", suffixes = c("_gg1","_gg2"), all = TRUE)
+        ## Reduce(function(x,y) merge(x, y, by = "node.id", suffixes = c("_gg1","_gg2"), all = TRUE), list(nodes.dt1,nodes.dt2))
+        diff_nodes.dt = merge.nodes.dt[,.(node.id, cn_gg1, cn_gg2)][cn_gg1 != cn_gg2,]
+        ## edges
+        edges.dt1 = ggs[[1]]$copy$edgesdt ## %>% gr ##.unlist
+        edges.dt2 = ggs[[2]]$copy$edgesdt ## %>% gr ##.unlist
+        merge.edges.dt = merge.data.table(edges.dt1, edges.dt2, by = "edge.id", suffixes = c("_gg1","_gg2"), all = TRUE)
+        diff_edges.dt = merge.edges.dt[,.(edge.id, cn_gg1, cn_gg2)][cn_gg1 != cn_gg2,]
+
+        ## nodes mark group_dif and color for nodes that are different cn
+        diff_nodes.dt[, diff_cn := abs(cn_gg1 - cn_gg2)]
+        diff_nodes.dt[, `:=`(group_diff = fifelse(diff_cn == 1, "one",
+                                                  fifelse(diff_cn > 1 & diff_cn <= 5, "one_five",
+                                                          fifelse(diff_cn > 5 & diff_cn <= 10, "five_ten", "ten_greater"))),
+                             color = fifelse(diff_cn == 1, rgb(t(col2rgb("blue")), maxColorValue = 255),
+                                             fifelse(diff_cn > 1 & diff_cn <= 5, rgb(t(col2rgb("orange")), maxColorValue = 255),
+                                                     fifelse(diff_cn > 5 & diff_cn <= 10, rgb(t(col2rgb("red")), maxColorValue = 255), rgb(t(col2rgb("pink")), maxColorValue = 255)))))]
+        ## edges mark group_dif and color for edges that are different cn
+        diff_edges.dt[, diff_cn := abs(cn_gg1 - cn_gg2)]
+        diff_edges.dt[, `:=`(group_diff = fifelse(diff_cn == 1, "one",
+                                                  fifelse(diff_cn > 1 & diff_cn <= 5, "one_five",
+                                                          fifelse(diff_cn > 5 & diff_cn <= 10, "five_ten", "ten_greater"))),
+                             color = fifelse(diff_cn == 1, rgb(t(col2rgb("blue")), maxColorValue = 255),
+                                             fifelse(diff_cn > 1 & diff_cn <= 5, rgb(t(col2rgb("orange")), maxColorValue = 255),
+                                                     fifelse(diff_cn > 5 & diff_cn <= 10, rgb(t(col2rgb("red")), maxColorValue = 255), rgb(t(col2rgb("pink")), maxColorValue = 255)))))]
+        ## mark these nodes with different colors
+        gg1 = ggs[[1]]$copy
+        gg2 = ggs[[2]]$copy
+        ## nodes
+        gg1$nodes$mark(col = "grey")
+        gg1$nodes[node.id %in% diff_nodes.dt$node.id]$mark(col = diff_nodes.dt$color)
+        gg2$nodes$mark(col = "grey")
+        gg2$nodes[node.id %in% diff_nodes.dt$node.id]$mark(col = diff_nodes.dt$color)
+        ## edges
+        gg1$edges$mark(col = "grey")
+        gg1$edges[edge.id %in% diff_edges.dt$edge.id]$mark(col = diff_edges.dt$color)
+        gg2$edges$mark(col = "grey")
+        gg2$edges[edge.id %in% diff_edges.dt$edge.id]$mark(col = diff_edges.dt$color)
+        return(list(gg1,gg2))
+    } else {
+        stop("Not implemented")
+    }
+}
+
 
 ## ## function to merge ggraphs
 ## merge_gg = function(gg1,
