@@ -159,6 +159,50 @@ markdiff_pan_gg = function(ggs,
 }
 
 
+## not sure if I'll use these functions again
+## function to subtract gg2 cn for edges and nodes from gg1
+subtract_cn_gg = function(gg1, gg2, add_log_cn = TRUE) {
+    gg1 = gg1$copy
+    gg2 = gg2$copy
+    ## nodes
+    gg1.nodes.dt = gg1$nodes$dt[,.(node.id, cn)]
+    gg2.nodes.dt = gg2$nodes$dt[,.(node.id, cn)]
+    ## merge nodes
+    merge.nodes.dt = merge.data.table(gg1.nodes.dt, gg2.nodes.dt, by = "node.id", suffixes = c("_gg1","_gg2"))
+    merge.nodes.dt[, new_cn := (cn_gg1 - cn_gg2)]
+    ## edges
+    gg1.edges.dt = gg1$edges$dt[,.(edge.id, cn)]
+    gg2.edges.dt = gg2$edges$dt[,.(edge.id, cn)]
+    ## merge edges
+    merge.edges.dt = merge.data.table(gg1.edges.dt, gg2.edges.dt, by = "edge.id", suffixes = c("_gg1","_gg2"))
+    merge.edges.dt[, new_cn := (cn_gg1 - cn_gg2)]
+    ## now mark
+    gg1$nodes$mark(cn = merge.nodes.dt$new_cn)
+    gg1$edges$mark(cn = merge.edges.dt$new_cn)
+    if(add_log_cn) {
+        merge.nodes.dt[new_cn != 0, log_new_cn := log10(abs(new_cn))]
+        merge.nodes.dt[new_cn < 0, log_new_cn := -log_new_cn]
+        merge.nodes.dt[new_cn == 0, log_new_cn := 0]
+        gg1$nodes$mark(log_new_cn = merge.nodes.dt$log_new_cn)
+    }
+    return(gg1)
+}
+
+## function to return a gg after detecting a minimum cn within a grange
+min_gg_gt = function(gg, gr, pad = 1) {
+    gg = gg$copy
+    nodes.gr = gg$nodes$gr %&% gr
+    if(length(nodes.gr) == 0)
+        stop("No nodes overlap the specific gr. (chr) must be the same between both")
+    yf = gg$meta$y.field
+    miny = mcols(nodes.gr)[,yf] %>% min
+    maxy = mcols(nodes.gr)[,yf] %>% max
+    gg$set(y0 = (miny-pad))
+    gg$set(y1 = (maxy-pad))
+    return(gg)
+}
+
+
 ## ## function to merge ggraphs
 ## merge_gg = function(gg1,
 ##                     gg2,
