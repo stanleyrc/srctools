@@ -27,6 +27,7 @@ pan_gg = function(ggs, #list of ggraphs to merge- will return the same length ve
     merged.gg = do.call(c,ggs)
     merged.gg$nodes$mark(node_disjoin_id = as.character(1:length(merged.gg$nodes)))
     merged.gg$edges$mark(edge_disjoin_id = as.character(1:length(merged.gg$edges)))
+    ## browser()
     disjoin.gg = merged.gg$copy$disjoin()
     ## now get the individual graphs from the disjoin
     ggs.new.lst = mclapply(1:length(ggs), function(x) {
@@ -56,6 +57,7 @@ gg_new_nodes = function(gg,
     ## get the copy number of the nodes from the parent ids
     merged.gg2 = merged.gg$copy
     cn.dt = merged.gg2$nodes$dt[ggraph_id == ggraph.id, .(node_disjoin_id,cn)]
+    ## browser()
     ## get the ids and split into more rows to get the node.id for the node_disjoin_id in this sample
     disjoin.sub.dt = disjoin.gg2$nodes$dt[,.(node_disjoin_id,node.id)]
     disjoin.sub.dt = disjoin.sub.dt[, .(node_disjoin_id = unlist(strsplit(node_disjoin_id, ","))), by = node.id]
@@ -73,7 +75,10 @@ gg_new_nodes = function(gg,
     disjoin.sub.dt = disjoin.sub.dt[, .(edge_disjoin_id = unlist(strsplit(edge_disjoin_id, ","))), by = edge.id] #put into long format by splitting the ids
     disjoin.edge.cn.dt = merge.data.table(cn.edge.dt, disjoin.sub.dt, by = "edge_disjoin_id", all.x = TRUE)
     ## mark the edge cn
+    edge_order = disjoin.gg2$edges[edge.id %in% disjoin.edge.cn.dt$edge.id]$dt$edge.id
+    disjoin.edge.cn.dt[, edge.id := factor(edge.id, levels = edge_order)]
     disjoin.edge.cn.dt = disjoin.edge.cn.dt[order(edge.id),]
+    disjoin.gg2$edges[edge.id %in% disjoin.edge.cn.dt$edge.id]$mark(cn = disjoin.edge.cn.dt$cn)
     disjoin.gg2$edges[edge.id %in% disjoin.edge.cn.dt$edge.id]$mark(cn = disjoin.edge.cn.dt$cn)
     disjoin.gg2$edges[!(edge.id %in% disjoin.edge.cn.dt$edge.id)]$mark(cn = NA) #not sure why I have to add this-the disjoin.gg2$edges$mark(cn=0) at the top should have done this but there are edges that were not added that have values
     ## fix reference copy number before running loosefix
