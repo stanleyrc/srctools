@@ -50,6 +50,7 @@ gg_new_nodes = function(gg,
     disjoin.gg2 = disjoin.gg$copy
     ## add which parent graph based on the ggraph_id
     ggraph.id = gg$dt$ggraph_id %>% unique
+    ## browser()
     ## set node and ref count to zero
     disjoin.gg2$edges$mark(cn = NA)
     disjoin.gg2$nodes$mark(cn = NA)
