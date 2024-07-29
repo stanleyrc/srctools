@@ -340,7 +340,7 @@ unique_reads_gw = function(bam, #aligned bam to get reads
 
 ## function to group transcripts across samples
 ## use output of unique_reads_gw with get_reads FALSE for many samples as input this function
-genes_reads_group_by_samples = function(genes_reads.dt, ref_gtf.dt) {
+genes_reads_group_by_samples = function(genes_reads.dt, ref_gtf.dt, group_by = "exons_assignment_events") {
   genes_reads.dt[, count_assignment_all_samples := .N, by = c("transcript_id","assignment_events")]
   genes_reads.dt[, count_assignment_type_all_samples := .N, by = c("transcript_id","assignment_events","assignment_type")]
   genes_reads.dt[, count_assignment_type_exons_all_samples := .N, by = c("transcript_id","assignment_events","assignment_type","exons")]
@@ -359,11 +359,45 @@ genes_reads_group_by_samples = function(genes_reads.dt, ref_gtf.dt) {
   genes_reads.dt = genes_reads.dt[order(-count_exons_only_all_samples),]
   genes_reads.dt[, grp_exons_only_all_samples := .GRP, by = c("transcript_id","exons_minus_ends")]
   ## use group_by = "exons_assignment_events"
-  genes_reads.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends_all_samples]
+  ## genes_reads.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends_all_samples]
+  genes_reads.dt = genes_reads.dt[order(-count_assignment_type),]
+  genes_reads.dt[, grp_assignment_type_all_samples := .GRP, by = c("transcript_id","assignment_events","assignment_type")]
+  genes_reads.dt = genes_reads.dt[order(-count_assignment_type_exons_all_samples),]
+  genes_reads.dt[, grp_assignment_type_exons := .GRP, by = c("transcript_id","assignment_events","assignment_type","exons")]
+
   ## get first read for each so I can plot every GENE variant
-  genes_reads.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons_minus_ends_all_samples]
-  genes_reads.dt[, final_grp_assignment := grp_assignment_type_exons_minus_ends_all_samples]
-  genes_reads.dt[, final_count_assignment := count_assignment_type_exons_minus_ends_all_samples]
+  if(group_by == "exons_assignment_events") {
+    genes_reads.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons_minus_ends_all_samples]
+    genes_reads.dt[, final_grp_assignment := grp_assignment_type_exons_minus_ends_all_samples]
+    genes_reads.dt[, final_count_assignment := count_assignment_type_exons_minus_ends_all_samples]
+  } else if (group_by == "assignment_events") {
+    genes_reads.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_assignment_type_all_samples]
+    genes_reads.dt[, final_grp_assignment := grp_assignment_type_all_samples]
+    genes_reads.dt[, final_count_assignment := count_assignment_type_all_samples]
+  } else if (group_by == "exons_only") {
+    stop("exons_only not implemented yet. Too strict")
+  }
+## ##########################
+##   if(group_by == "exons_assignment_events") {
+##   ## get all reads as a list object 
+##     gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends_all_samples]
+##     ## get first read for each so I can plot every GENE variant
+##     gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type_exons_minus_ends)[1], by = grp_assignment_type_exons_minus_ends_all_samples]
+##     gene.dt[, final_grp_assignment := grp_assignment_type_exons_minus_ends]
+##     gene.dt[, final_count_assignment := count_assignment_type_exons_minus_ends]
+##   } else if (group_by == "assignment_events") {
+##     gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_assignment_type]
+##     gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_assignment_type]
+##     gene.dt[, final_grp_assignment := grp_assignment_type]
+##     gene.dt[, final_count_assignment := count_assignment_type]
+##   } else if (group_by == "exons_only") {
+##     gene.dt[, reads_grp_assignment_type := list(list(sort(qname))), by = grp_exons_only]
+##     gene.dt[, first_read_assignment := unlist(reads_grp_assignment_type)[1], by = grp_exons_only]
+##     gene.dt[, final_grp_assignment := grp_exons_only]
+##     gene.dt[, final_count_assignment := count_exons_only]
+##   }
+
+  ########################
   ## now add transcript name to the table as well
   gtf_sub.dt = ref_gtf.dt[,.(transcript_id,gene_name,transcript_name)] %>% unique
   gtf_sub.dt = gtf_sub.dt[!is.na(transcript_id),]
@@ -372,15 +406,27 @@ genes_reads_group_by_samples = function(genes_reads.dt, ref_gtf.dt) {
   sample_qname.dt = unique(genes_reads.dt[,.(qname,sample)]) %>% setnames(.,c("qname","first_read_assignment_sample"))
   genes_reads.dt = merge.data.table(genes_reads.dt, sample_qname.dt, by.x = "first_read_assignment", by.y = "qname", all.x = TRUE)
   ## add counts per sample as separate columns for each patient
-  genes_reads.dt[, final_count_assignment := count_assignment_type_exons_minus_ends]
-  genes_reads.dt[, final_count_assignment_all_samples := count_assignment_type_exons_minus_ends_all_samples]
-  counts.dt = genes_reads.dt[, .N, by = c("transcript_id", "assignment_events", "assignment_type", "exons_minus_ends", "sample")]
-  setnames(counts.dt, "N", "count_assignment_type_exons_minus_ends_all_samples")
-  counts.dt[,sample := paste0("counts_",sample)]
-  counts_wide.dt = dcast(counts.dt, transcript_id + assignment_events + assignment_type + exons_minus_ends ~ sample, value.var = "count_assignment_type_exons_minus_ends_all_samples", fill = 0)
-  ## add columns with counts for each
-  merged.dt = merge.data.table(genes_reads.dt, counts_wide.dt, by = c("transcript_id", "assignment_events", "assignment_type", "exons_minus_ends"), all.x = TRUE)
-  merged.dt[, total_counts_by_gene_name := .N, by = "gene_name"]
+  if(group_by == "assignment_events_exons") {
+    genes_reads.dt[, final_count_assignment := count_assignment_type_exons_minus_ends]
+    genes_reads.dt[, final_count_assignment_all_samples := count_assignment_type_exons_minus_ends_all_samples]
+    counts.dt = genes_reads.dt[, .N, by = c("transcript_id", "assignment_events", "assignment_type", "exons_minus_ends", "sample")]
+    setnames(counts.dt, "N", "count_assignment_type_exons_minus_ends_all_samples")
+    counts.dt[,sample := paste0("counts_",sample)]
+    counts_wide.dt = dcast(counts.dt, transcript_id + assignment_events + assignment_type + exons_minus_ends ~ sample, value.var = "count_assignment_type_exons_minus_ends_all_samples", fill = 0)
+    ## add columns with counts for each
+    merged.dt = merge.data.table(genes_reads.dt, counts_wide.dt, by = c("transcript_id", "assignment_events", "assignment_type", "exons_minus_ends"), all.x = TRUE)
+    merged.dt[, total_counts_by_gene_name := .N, by = "gene_name"]
+  } else if (group_by == "assignment_events") {
+    genes_reads.dt[, final_count_assignment := count_assignment_type]
+    genes_reads.dt[, final_count_assignment_all_samples := count_assignment_type_all_samples]
+    counts.dt = genes_reads.dt[, .N, by = c("transcript_id", "assignment_events", "assignment_type", "sample")]
+    setnames(counts.dt, "N", "count_assignment_type_all_samples")
+    counts.dt[,sample := paste0("counts_",sample)]
+    counts_wide.dt = dcast.data.table(counts.dt, transcript_id + assignment_events + assignment_type ~ sample, value.var = "count_assignment_type_all_samples", fill = 0)
+    ## add columns with counts for each
+    merged.dt = merge.data.table(genes_reads.dt, counts_wide.dt, by = c("transcript_id", "assignment_events", "assignment_type"), all.x = TRUE)
+    merged.dt[, total_counts_by_gene_name := .N, by = "gene_name"]
+  }
   return(merged.dt)
 }
 
@@ -395,6 +441,7 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
                           ref_gtf.gr,                         #reference gtf as a granges
                           bam_column = "aligned_bam",         #column in pairs table for bam file
                           read_assignments_column = "read_assignments", #column in pairs table with read assignments
+                          group_by = "assignment_events_exons",
                           return_type = "gw",                          #whether to return as a gw, else will return grl
                           pad_get_iso = 10000,                            #value to pad reading in the bam files
                           ignore_polyA_assignment = TRUE)                 #whether to ignore polyA=False and polyA=TRUE in additional_info
@@ -408,9 +455,13 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
   if((!is.null(min_perc_gene_reads_isoform)) & (!is.null(min_counts_isoform))) {
     genes_reads.dt2 = genes_reads.dt
   }
+  if(nrow(genes_reads.dt2) == 0) {
+    return(NULL)
+  }
   if(get_reads) {
     unique_samples_reads.dt = genes_reads.dt2[,.(first_read_assignment,gene_name,first_read_assignment_sample,final_grp_assignment,final_count_assignment_all_samples)] %>% unique
     uniq_samples = unique(unique_samples_reads.dt$first_read_assignment_sample)
+    message("Getting one read per unique isoform")
     genes.gw.lst = mclapply(uniq_samples, function(sample) {
       unique.sub.dt = unique_samples_reads.dt[first_read_assignment_sample == sample,]
       sub.pairs.dt = pairs.dt[sample,]
@@ -471,25 +522,40 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
           grp_assignment = as.character(genes_reads_sub.dt[first_read_assignment == qname1,]$final_grp_assignment %>% unique) %>% paste0("GRP.",.)
           qname_list = unlist(genes_reads_sub.dt[first_read_assignment == qname1,]$reads_grp_assignment_type) %>% unique
         }
-        gene.sub.gw$grp_assignment = grp_assignment
+        if(length(add_grp) > 1) {
+          gene.sub.gw$grp_assignment = paste0(grp_assignment, collapse = ",")
+        } else {
+          gene.sub.gw$grp_assignment = grp_assignment
+        }
         ## gene.sub.gw$qname_list = list(qname_list)
         return(as.data.table(gene.sub.gw))
       },mc.cores = 1)
       gene.gw.dt = rbindlist(gene.gw.lst, fill = TRUE)
       return(gene.gw.dt)
     }, mc.cores = cores)
+    
+    message("Binding all unique walks per read")
     genes.gw.dt = rbindlist(genes.gw.lst,fill = TRUE)
+    message("Converting reads to GRanges")    
     gene.gw.gr = GRanges(genes.gw.dt, seqlengths = hg_seqlengths())
+    message("Converting GRanges to GRangesList")
     gene.gw = rtracklayer::split(gene.gw.gr, f = mcols(gene.gw.gr)["qname"])
+    ## browser()
     if(return_type == "gw") {
       message("Converting to gW")
       gene.gw = gW(grl = gene.gw)
       ## add transcript names
       message("Adding transcript names as: transcript_name ; Count")
-      name.gw(gene.gw,c("transcript_name","count"))
+      if(length(gene.gw) > 1) {
+        name.gw(gene.gw,c("transcript_name","count"))
+      } else if (length(gene.gw) == 1){
+        new_name = paste(gene.gw$grl[[1]]$transcript_name[1], gene.gw$grl[[1]]$count[1], sep = "; ")
+        gene.gw$set(name = new_name)
+      }
       ## transcript_names = sapply(gene.gw$grl, function(x) x$transcript_name[1])
       ## gene.gw$set(name = transcript_names)
       ## add y values in order of abundance
+      ## browser()
       message("Adding y values in order of abundance. Adding count for all samples and the grp_assignment.")
       abundance_order.dt = data.table(count = (sapply(gene.gw$grl, function(x) x$count[[1]])), grp_assignment = (sapply(gene.gw$grl, function(x) x$grp_assignment[[1]])),transcript_name = (sapply(gene.gw$grl, function(x) x$transcript_name[[1]])), transcript_id = (sapply(gene.gw$grl, function(x) x$transcript_id[[1]])))
       abundance_order.dt[,current_order := 1:.N]
@@ -506,8 +572,13 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       gene.gw$set(transcript_id = abundance_order.dt$transcript_id)
       message("Adding assignment_events, assignment_type, exons_minus_ends, structural_category, final_grp_assignment, additional_info, and counts for each sample.")
       gene.gw.dt = gene.gw$dt
-      cols_add = c("assignment_events", "assignment_type", "exons_minus_ends", "structural_category", "final_grp_assignment", "additional_info", "gene_name")
-      cols_add = c(cols_add,grep("^counts_",names(genes_reads.dt2),value = TRUE))
+      if(group_by == "assignment_events_exons") {
+        cols_add = c("assignment_events", "assignment_type", "exons_minus_ends", "structural_category", "final_grp_assignment", "additional_info", "gene_name")
+        cols_add = c(cols_add,grep("^counts_",names(genes_reads.dt2),value = TRUE))
+      } else if(group_by == "assignment_events") {
+        cols_add = c("assignment_events", "assignment_type","structural_category", "final_grp_assignment", "additional_info", "gene_name")
+        cols_add = c(cols_add,grep("^counts_",names(genes_reads.dt2),value = TRUE))
+      }
       genes_reads.dt2_merge = genes_reads.dt2[,..cols_add] %>% unique
       if(ignore_polyA_assignment) {
         genes_reads.dt2_merge[, additional_info := gsub("PolyA=False|PolyA=True", "PolyA=ignored",additional_info)]
@@ -515,18 +586,21 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       }
       genes_reads.dt2_merge[,final_grp_assignment := paste0("GRP.",final_grp_assignment)]
       genes_reads.dt2_merge = genes_reads.dt2_merge[final_grp_assignment %in% gene.gw.dt$grp_assignment,]
-      if(nrow(genes_reads.dt2_merge) == length(gene.gw)) {
-        set.dt = merge.data.table(gene.gw.dt[,.(walk.id,grp_assignment)], genes_reads.dt2_merge, by.x = "grp_assignment", by.y = "final_grp_assignment", all = TRUE)
-        set.dt = set.dt[order(walk.id),]
-        cols_add2 = names(set.dt)
-        cols_add2 = cols_add2[!(cols_add2 %in% c("walk.id","grp_assignment"))]
-        for(x in cols_add2) {
-          expr <- parse(text = paste0("gene.gw$set(", x, " = set.dt[['", x, "']])")) #set for all to add to the data.table
-          eval(expr)
-        }
-      } else {
-        warning("Genes_reads.dt2 unique values are not the same length as the number of walks. Extra annotations will not be added")
+      
+      if(nrow(genes_reads.dt2_merge) != length(gene.gw)) {
+        warning("Genes_reads.dt2 unique values are not the same length as the number of walks. Some transcripts have the same read assigned so these will not have counts") #
       }
+      set.dt = merge.data.table(gene.gw.dt[,.(walk.id,grp_assignment)], genes_reads.dt2_merge, by.x = "grp_assignment", by.y = "final_grp_assignment", all = TRUE)
+      set.dt = set.dt[order(walk.id),]
+      cols_add2 = names(set.dt)
+      cols_add2 = cols_add2[!(cols_add2 %in% c("walk.id","grp_assignment"))]
+      for(x in cols_add2) {
+        expr <- parse(text = paste0("gene.gw$set(", x, " = set.dt[['", x, "']])")) #set for all to add to the data.table
+        eval(expr)
+      }
+      ## } else {
+      ## warning("Genes_reads.dt2 unique values are not the same length as the number of walks. Extra annotations will not be added")
+      ## }
       gene.gw = gene.gw[order(-count)]
     }
     return(list(gene.gw, genes_reads.dt2))
@@ -622,6 +696,7 @@ plot_isoforms_gw = function(gw,
   }
   if(!is.null(max_isoforms) & (unique_grp_length > max_isoforms)) {
     gw3 = gw2[grp_assignment %in% grp_subset]
+    gw3$set(y = length(gw3):1)
     ppng(plot(c(gw3$gtrack(name = gw_plotname,height = gw_height,y.field = "y",yaxis = FALSE), gencode.subset), gr), height = walk_height, width = walk_width, res = walk_res, file = plot1)
   } else if(!is.null(max_isoforms)) {
     ppng(plot(c(gw2$gtrack(name = gw_plotname,height = gw_height,y.field = "y",yaxis = FALSE), gencode.subset), gr), height = walk_height, width = walk_width, res = walk_res, file = plot1)
