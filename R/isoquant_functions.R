@@ -473,12 +473,12 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       gene.gr = (gene.gr + pad_get_iso) %>% gr.reduce
       cols_keep = c("qname", "chr_classification", "strand_classification", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info", "structural_category")
       reads_sub.dt = genes_reads.dt[,..cols_keep]
-      gene.gw = get_iso_reads(bam,
+      ## gene.gw = get_iso_reads(bam,
+      gene.gw = quick_ireads(bam,
                               gr = (gene.gr),
                               gtf = ref_gtf.gr,
                               cores = 1,
                               reannotate = FALSE,
-                              annotate_missing = TRUE,
                               ## read_assignments = reads.dt,
                               read_assignments = reads_sub.dt,
                               type = "gw",
@@ -761,5 +761,195 @@ plot_isoform_counts = function(data, x, y, fill, plot_title, xlab = "", ylab = y
   return(pt)
 }
 
+
+## much cleaner version of get_iso_reads-will use already labeled transcripts-assigning a transcript to each read should be a separate function-it could then be implemented here much more easily
+quick_ireads = function(bam,
+                      gr,
+                      gtf,
+                      add_transcript_name = TRUE,
+                      read_assignments = NULL, # data.table with qname and transcript_id, other meta data will be added to the gwalk, multiple transcript_ids per qname will only result in one walk by selecting the shorter reference transcript_id
+                      type = "gw",
+                      reannotate = FALSE,
+                      remove_cigar_tags = c("S","D"),
+                      unique_reads = TRUE,
+                      subset_qname = NULL, #reads to subset on
+                      filter_qname = NULL, # reads to filter out
+                      pipeline = "isoquant",
+                      cores = 1) {
+  message(paste0("Reading in ",bam))
+  md.gr.bam = bamUtils::read.bam(bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
+  if(length(md.gr.bam) == 0) {
+    warning("no reads in the specified region. Returning null")
+    return(NULL)
+  }
+  message("Done reading")
+  md.dt = as.data.table(md.gr.bam)
+  md.dt = md.dt[width != 0,]
+  if(unique_reads) {
+    md.dt = unique(md.dt)
+  }
+  if(!is.null(subset_qname)) {
+    md.dt = md.dt[qname %in% subset_qname,]
+  }
+  if(!is.null(filter_qname)) {
+    md.dt = md.dt[!(qname %in% filter_qname),]
+  }
+  md.gr = GRanges(md.dt,seqlengths = hg_seqlengths())
+  message("Splicing cigar string")
+  md.grl = bamUtils::splice.cigar(md.gr,get.seq = TRUE, rem.soft = FALSE)
+  message("Done Splicing cigar string")
+  if(length(md.grl) == 0) {
+    return(NULL)
+  }
+  gencode.gr = gtf
+  gencode.gr$type2 = gencode.gr$type
+  ## if(exists("potential_transcript_merge")) {
+  potential_transcript_merge = NULL
+  if ((!reannotate & pipeline == "isoquant")) {
+    if(is.null(read_assignments)) {
+      stop("Read_assignments now must be provided")
+    }
+    if(inherits(read_assignments,"character")) {
+      reads.dt = isoquant_read_assignments(read_assignments)
+    } else if (inherits(read_assignments,"data.table")) {
+      message("User supplied read assignments as data.table. Continuing ...")
+      reads.dt = read_assignments
+    }
+    ##add transcript labels to bam reads
+    md.dt2 = unlist(md.grl) %>% as.data.table()
+    md.dt3 = merge.data.table(md.dt2, reads.dt, by = "qname", all = TRUE)[type != "N",]
+    ## add check for multiple assigned transcripts of the same read-if so pick shortest
+    check.dt = md.dt3[,.(qname,transcript_id)] %>% unique
+    check.dt[, N_qname_tr_id := .N, by = "qname"]
+    if(nrow(check.dt[N_qname_tr_id > 1,]) > 1) {
+      check.sub.dt = check.dt[N_qname_tr_id > 1,]
+      qnames_multiple_tr_ids = check.sub.dt$qname %>% unique
+      warning(paste0("Some transcripts are assigned to multiple reads by isoquant. Will assign the shortest. Reads: ",qnames_multiple_tr_ids))
+      md.lst = mclapply(unique(check.sub.dt$qname), function(x) {
+        tr.test = check.sub.dt[qname == x,]$transcript_id
+        tr.dt = as.data.table((gtf.gr %Q% (transcript_id %in% tr.test)) %Q% (type == "transcript"))
+        tr.dt = tr.dt[order(width),]
+        selected_transcript = tr.dt$transcript_id[1]
+        sub.dt = md.dt3[qname == x & transcript_id == selected_transcript,]
+        return(sub.dt)
+      },mc.cores = cores)
+      md.temp.dt = rbindlist(md.lst, fill = TRUE)
+      md.dt3 = rbind(md.dt3[!(qname %in% md.temp.dt$qname),],md.temp.dt)
+    }
+  }
+  ## md.dt3 - every read must now be assigned to a reference transcript
+  if("associated_transcript" %in% names(md.dt3)) { ## for pipeline == "pacbio")
+    md.full = md.dt3[structural_category == "full-splice_match" | structural_category == "full_splice_match",]
+    md.sub = md.dt3[structural_category != "full-splice_match" & associated_transcript != "novel"]
+    md.novel = md.dt3[structural_category != "full-splice_match" & associated_transcript == "novel"]
+    if(nrow(md.novel) >0 ) {
+      stop("Every read must now have a transcript assigned")
+    }
+  } else {
+    md.full = md.dt3[structural_category == "full-splice_match" | structural_category == "full_splice_match",]
+    md.sub = md.dt3[!(structural_category == "full-splice_match"| structural_category == "full_splice_match")]
+    md.novel = md.dt3[structural_category != "full-splice_match" & is.null(transcript_id)]
+    if(nrow(md.novel) >0 ) {
+      stop("Every read must now have a transcript assigned")
+    }
+  }
+  md.annotated = rbind(md.full,md.sub)
   
-  
+  if(class(gtf) == "character") {
+    message(paste0("Reading in ",gtf)) 
+    gtf = rtracklayer::readGFF(gtf) %>% as.data.table
+    message(paste0("Done reading in ",gtf))
+  }
+  if(class(gtf)[1] != "data.table" & class(gtf)[1] != "GRanges") {
+    stop("Gtf must be a character to a gtf file or a data.table")
+  }
+  if(any(class(gtf) != "GRanges")) {
+    gtf.gr = GRanges(gtf, seqlengths = hg_seqlengths())
+  } else {
+    gtf.gr = gtf
+  }
+  ## md.annotated[seqnames != chr,] ## duplicate seqnames column
+  md.annotated.gr = GRanges(md.annotated,seqlengths = hg_seqlengths())
+  md.annotated.gr = md.annotated.gr %Q% (!(type %in% remove_cigar_tags))
+#############################NEWWWWWWWWWWWWWWWWWWWWWW
+  ## now there are a few things to annotated for each read:
+  ## (1) what type is every base pair (UTR, exon, intron, etc)
+  ## (2) anything missing
+  ## (3) add meta data
+  ## get unique qnames and do it for every read
+  unique_qnames = md.annotated.gr$qname %>% unique
+  ## x = "m64466e_230825_205028/114753823/ccs"
+  md.annotated.lst = mclapply(unique_qnames, function(x) {
+    ## get the read alignments
+    sub.gr = md.annotated.gr %Q% (qname == x)
+    ## sub.gr = sub.gr %Q% (!(type %in% remove_cigar_tags))
+    ## get the reference transcript
+    ref.tr.id = unique(sub.gr$transcript_id)
+    ref.tr.gr = ((gtf.gr %Q% (!is.na(transcript_id))) %Q% (transcript_id == ref.tr.id)) #remove NAs then subset granges
+    ref.tr.gr = ref.tr.gr %Q% (type != "transcript") #this is the full reference coordiantes which I do not want for annotating
+    ref.tr.gr$type = ref.tr.gr$type %>% as.character #this is sometimes a factor and messes up gr.val
+    ## create tiled reference 
+    tile.gr = gr.tile(ref.tr.gr, width = 1)
+    tile.gr = gr.val(tile.gr,ref.tr.gr, "type")
+    tile.dt = gr2dt(tile.gr)
+    ## reduce the tile so no overlapping annotations
+    tile.dt[, coding_type_vect := lapply(type, function(x) unlist(strsplit(x, ", ")))]
+    tile.dt[, coding_type_simple := sapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
+                                                                         ifelse("stop_codon" %in% x, "stop_codon",
+                                                                         ifelse("UTR" %in% x, "UTR",
+                                                                         ifelse("exon" %in% x, "exon",
+                                                                         ifelse("CDS" %in% x, "exon","intron"))))))]
+    tile.dt[, c("type","coding_type_vect") := NULL]
+    tile.gr2 = GRanges(tile.dt, seqlengths = hg_seqlengths())
+    tile.gr3 = gr.reduce(tile.gr2, by = "coding_type_simple", ignore.strand = FALSE)
+    ##
+    sub.gr2 = gr.breaks(sub.gr, tile.gr3)
+    ## add whether each exists
+    sub.gr$mapped = TRUE
+    sub.gr3 = gr.val(sub.gr2, sub.gr, c("mapped","type","riid")) #riid should be in order but will have NAs so added a new order at the bottom here
+    read.dt = gr2dt(sub.gr3)
+    read.dt[is.na(mapped), coding_type_simple := "del"]
+    read.dt[is.na(mapped), type := NA]
+    read.dt[, order := 1:.N]
+    read.dt[, qname := x]
+    return(read.dt)
+  }, mc.cores = cores)
+  reads.dt = rbindlist(md.annotated.lst, fill = TRUE)
+  message("Done labeling each read to a transcript")
+  reads.gr = GRanges(reads.dt, seqlengths = hg_seqlengths())
+  reads.grl = rtracklayer::split(reads.gr, f = mcols(reads.gr)["qname"])
+  message("Converted reads to grl. Adding meta data to grl")
+  reads.dt
+  meta.dt = copy(md.annotated)[, c("seqnames","start","end", "width","strand","type","rid","riid","fid") := NULL] %>% unique
+  meta.dt[, qname := factor(qname, levels = names(reads.grl))]
+  if(add_transcript_name) {
+    meta.dt2 = merge.data.table(meta.dt, unique(gr2dt(gtf)[,.(transcript_id,transcript_name)]), by = "transcript_id")
+    if(nrow(meta.dt2) > length(reads.grl)) {
+      warning("Failed to add transcript_id. Likely more than one unique transcript_id and transcript_name combination in gtf")
+      meta.dt2 = meta.dt
+      add_transcript_name = FALSE
+    }
+  } else {
+    meta.dt2 = meta.dt
+  }
+  meta.dt2 = meta.dt2[order(qname),]
+  mcols(reads.grl) = meta.dt2
+  if(type == "gw") {
+    message("type is 'gw' converting grl to gW object")
+    reads.gw = gW(grl = reads.grl)
+    ## add coloring of nodes to match track.gencode
+    cmap.dt = data.table(category = c("exon", "intron", "start_codon", "stop_codon", "UTR", "UTR_long","del", "missing"), color = c("#0000FF99", "#FF0000B3", "green", "red", "#A020F066", "red", "orange", "orange"))
+    for(x in 1:nrow(cmap.dt)) {
+      cmap.sub = cmap.dt[x,]
+      reads.gw$nodes[coding_type_simple == cmap.sub$category]$mark(col = cmap.sub$color)
+    }
+    if(add_transcript_name) {
+      reads.gw$set(name = transcript_id)
+    }
+    message("done converting grl to gW object. returning gW")
+    return(reads.gw)
+  } else if(type == "grl") {
+    message("type is 'grl' returning grl")
+    return(reads.grl)
+  }
+}
