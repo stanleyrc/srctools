@@ -1,3 +1,43 @@
+## get fusion data from isoseq task using fusion_breakpoints_groups
+get_fus_data = function(fusion_breakpoints_groups, cores = 1) {
+  fus.groups.dt = read_fusion_groups(fusion_breakpoints_groups)
+  fus.groups.dt[, reads := tstrsplit(extra,"=",keep = 3, fixed = TRUE)]
+  fus.groups.dt[, reads := tstrsplit(reads,";",keep = 1, fixed = TRUE)]
+  fus.groups.dt[, reads2 := list(strsplit(reads,",",fixed=TRUE))]
+  fus.groups.dt2 = copy(fus.groups.dt)
+  fus.groups.dt = fus.groups.dt[, .(qname = unlist(reads2)), by = c("chr1", "start1", "end1", "chr2", "start2", "end2", "id", "score", "strand1", "strand2", "info", "row_number", "CB", "AC")]
+  fus.sub.dt = fus.groups.dt2[,.(chr1, start1, end1, chr2, start2, end2, id, score, strand1, strand2, info, row_number, CB, AC)]
+  fus.sub.dt = unique(fus.sub.dt)
+  fus.lst = mclapply(1:nrow(fus.sub.dt), function(x) {
+    ## subset to get granges for each pair of breakpoints
+    sub.dt = fus.sub.dt[x,]
+    bp.id = sub.dt$id
+    sub.dt[, reads := list(fus.groups.dt[id == bp.id,]$qname)]
+    sub.dt[, read_count := length(fus.groups.dt[id == bp.id,]$qname)]
+    sub.dt[, first_read := fus.groups.dt[id == bp.id,]$qname[1]]
+    return(sub.dt)
+  }, mc.cores = cores)
+  fus.dt = rbindlist(fus.lst, fill = TRUE)
+  fus.dt[, gene_names := sub(".*GN=([^;]+);.*", "\\1", info)]
+  fus.dt[, gene_names := gsub("\\/","",gene_names)]
+  fus.dt[, gene_names := gsub("NA,",",",gene_names)]
+  fus.dt[, gene_names := gsub(",NA",",",gene_names)]
+  max_genes = max(sapply(strsplit(fus.dt$gene_name, ","), length), na.rm = TRUE)
+  fus.dt[, paste0("gene", 1:max_genes) := tstrsplit(gene_names, ",", fixed=TRUE, fill=NA)]
+  fus.dt[gene1 == "", gene1 := NA]
+  fus.dt[gene2 == "", gene2 := NA]
+  if("gene2" %in% names(fus.dt)) {
+    fus.dt[gene3 == "", gene3 := NA]
+  }
+  if("gene4" %in% names(fus.dt)) {
+    fus.dt[gene4 == "", gene4 := NA]
+  }
+  fus.dt = fus.dt[order(-read_count),]
+  fus.dt[, log_read_count := log(read_count)]
+  fus.dt[, log10_read_count := log10(read_count)]
+  return(fus.dt)
+}
+
 ## title = isoquant_read_assignments
 ## read in read assignments - contains:
 ## assignment_events - events to classify the reads

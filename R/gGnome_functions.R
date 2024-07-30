@@ -542,3 +542,22 @@ amp_stats = function(gg, jcn.thresh = 8, cn.thresh = 2, fbi.cn.thresh = 0.5,
       return(amps)
   }
 }
+
+
+
+## function to get general stats from the fusions gwalk objects
+get_fus.gw.dt = function(fusions_gw, cores = 1) {
+  fus.gw = readRDS(fusions_gw)
+  fus.gw.dt = fus.gw$dt
+  max_genes = max(sapply(strsplit(fus.gw.dt$genes, ","), length), na.rm = TRUE)
+  fus.gw.dt[, paste0("gene", 1:max_genes) := tstrsplit(genes, ",", fixed=TRUE, fill=NA)]
+  fus.gw.dt[, sample := pr]
+  ## add a vector of chromosomes in the fusion
+  fus.gw.gr = grl.unlist(fus.gw$grl)
+  fus.gw.gr.dt = gr2dt(fus.gw.gr)[,.(seqnames,grl.ix)]
+  fus.gw.gr.dt[, chromosomes := paste0(unique(seqnames), collapse = ","), by = "grl.ix"]
+  max_chromosomes = max(sapply(strsplit(fus.gw.gr.dt$chromosomes, ","), length), na.rm = TRUE)
+  fus.gw.gr.dt[, paste0("chr", 1:max_chromosomes) := tstrsplit(chromosomes, ",", fixed=TRUE, fill=NA)]
+  fus.gw.gr.dt[, chromosomes := paste0(unique(seqnames), collapse = ","), by = "grl.ix"]
+  return(fus.gw.gr.dt)
+}
