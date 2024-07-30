@@ -551,7 +551,6 @@ get_fus.gw.dt = function(fusions_gw, cores = 1) {
   fus.gw.dt = fus.gw$dt
   max_genes = max(sapply(strsplit(fus.gw.dt$genes, ","), length), na.rm = TRUE)
   fus.gw.dt[, paste0("gene", 1:max_genes) := tstrsplit(genes, ",", fixed=TRUE, fill=NA)]
-  fus.gw.dt[, sample := pr]
   ## add a vector of chromosomes in the fusion
   fus.gw.gr = grl.unlist(fus.gw$grl)
   fus.gw.gr.dt = gr2dt(fus.gw.gr)[,.(seqnames,grl.ix)] %>% unique
