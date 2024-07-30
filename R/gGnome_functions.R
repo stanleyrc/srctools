@@ -554,10 +554,13 @@ get_fus.gw.dt = function(fusions_gw, cores = 1) {
   fus.gw.dt[, sample := pr]
   ## add a vector of chromosomes in the fusion
   fus.gw.gr = grl.unlist(fus.gw$grl)
-  fus.gw.gr.dt = gr2dt(fus.gw.gr)[,.(seqnames,grl.ix)]
+  fus.gw.gr.dt = gr2dt(fus.gw.gr)[,.(seqnames,grl.ix)] %>% unique
   fus.gw.gr.dt[, chromosomes := paste0(unique(seqnames), collapse = ","), by = "grl.ix"]
   max_chromosomes = max(sapply(strsplit(fus.gw.gr.dt$chromosomes, ","), length), na.rm = TRUE)
   fus.gw.gr.dt[, paste0("chr", 1:max_chromosomes) := tstrsplit(chromosomes, ",", fixed=TRUE, fill=NA)]
   fus.gw.gr.dt[, chromosomes := paste0(unique(seqnames), collapse = ","), by = "grl.ix"]
-  return(fus.gw.gr.dt)
+  fus.gw.gr.dt[, seqnames := NULL]
+  fus.gw.gr.dt = fus.gw.gr.dt %>% unique
+  fus.gw.dt = cbind(fus.gw.dt, fus.gw.gr.dt)
+  return(fus.gw.dt)
 }
