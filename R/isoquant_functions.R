@@ -200,6 +200,7 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "e
   gene.dt[, count_exons_only := .N, by = c("transcript_id","exons_minus_ends")]
   gene.dt = gene.dt[order(-count_exons_only),]
   gene.dt[, grp_exons_only := .GRP, by = c("transcript_id","exons_minus_ends")]
+  browser()
   if(group_by == "exons_assignment_events") {
   ## get all reads as a list object 
     gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends]
@@ -906,12 +907,18 @@ quick_ireads = function(bam,
     sub.gr2 = gr.breaks(sub.gr, tile.gr3)
     ## add whether each exists
     sub.gr$mapped = TRUE
-    sub.gr3 = gr.val(sub.gr2, sub.gr, c("mapped","type","riid")) #riid should be in order but will have NAs so added a new order at the bottom here
+    sub.gr3 = gr.val(sub.gr2, sub.gr, c("mapped","type","riid")) #riid should be in order but will have NAs so added a new order at the bottom here - need to switch order if transcript on negative strand
     read.dt = gr2dt(sub.gr3)
     read.dt[is.na(mapped), coding_type_simple := "del"]
     read.dt[is.na(mapped), type := NA]
-    read.dt[, order := 1:.N]
     read.dt[, qname := x]
+    if(as.character(unique(ref.tr.gr@strand@values)) == "-") {
+      read.dt = read.dt[, order := .N:1]
+      read.dt = read.dt[order(order),]
+    } else {
+      read.dt[, order := 1:.N]
+      read.dt = read.dt[order(order),]
+    }
     return(read.dt)
   }, mc.cores = cores)
   reads.dt = rbindlist(md.annotated.lst, fill = TRUE)
