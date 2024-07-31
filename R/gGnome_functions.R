@@ -546,7 +546,9 @@ amp_stats = function(gg, jcn.thresh = 8, cn.thresh = 2, fbi.cn.thresh = 0.5,
 
 
 ## function to get general stats from the fusions gwalk objects
-get_fus.gw.dt = function(fusions_gw, cores = 1) {
+get_fus.gw.dt = function(fusions_gw,
+                         add_footprints = FALSE, #will take much longer
+                         cores = 1) {
   fus.gw = readRDS(fusions_gw)
   fus.gw.dt = fus.gw$dt
   max_genes = max(sapply(strsplit(fus.gw.dt$genes, ","), length), na.rm = TRUE)
@@ -561,5 +563,25 @@ get_fus.gw.dt = function(fusions_gw, cores = 1) {
   fus.gw.gr.dt[, seqnames := NULL]
   fus.gw.gr.dt = fus.gw.gr.dt %>% unique
   fus.gw.dt = cbind(fus.gw.dt, fus.gw.gr.dt)
+  if(add_footprints) {
+    ## get alt edge ids
+    ## alt.edges.lst = fus.gw$sedges[type == "ALT",]$dt$sedge.id %>% unique
+    ## alt.edges.lst = fus.gw$edges[type == "ALT",]$dt$edge.id %>% unique
+    ## alt.edges.lst
+    ## fus.gw.dt[, sedge.id_alt := lapply(sedge.id, function(x) abs(x)[abs(x) %in% alt.edges.lst])]
+    ## junc.lst = mclapply(1:length(fus.gw), function(x) {
+    ##   paste0(gr.string(gr.reduce(fus.gw[x]$[[1]])), collapse = ",")
+    ## }, mc.cores = cores)
+    ## test.lst = sapply(1:length(fus.gw),function(x) paste0(gr.string(gr.reduce(fus.gw[x]$grl[[1]])), collapse = ","))
+    ## get node coordinates
+    ## fus.gw$edges[type == "ALT",]
+    junction.lst = mclapply(1:length(fus.gw), function(x) {
+      junction_list = paste0(gr.string(fus.gw[x]$footprint), collapse = ",")
+      junc.dt = data.table(walk.id = fus.gw$dt$walk.id[x], junctions = junction_list)
+      return(junc.dt)
+    },mc.cores = cores)
+    junctions.dt = rbindlist(junction.lst, fill = TRUE)
+    fus.gw.dt[, footprint := junctions.dt$junctions]
+  }
   return(fus.gw.dt)
 }

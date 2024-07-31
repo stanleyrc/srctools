@@ -1,3 +1,73 @@
+## ## function to merge ggraph and fusions gwalk objects- could not get this to work well
+## merge_junctions_gg_iso = function(fusions_gw, #fusions_gg from fusions task
+##                                   iso_gw,  #gwalk after generating gwalks for all samples
+##                                   pad = 1e3,
+##                                   force_seqlengths = FALSE, #useful when gwalks do not have the same seqlengths
+##                                   filter_type = "ALT") #can be a list of c("ALT","REF") to merge ref and alt junctions
+## { 
+##   if(inherits(fusions_gw,"character")) {
+##     fusions_gw = readRDS(fusions_gw)
+##   }
+##   if(!inherits(fusions_gw, "gWalk")) {
+##     stop("fusions_gw must be either a path to a gWalk or a gWalk object")
+##   }
+##   if(inherits(iso_gw,"character")) {
+##     iso_gw = readRDS(iso_gw)
+##   }
+##   if(!inherits(iso_gw, "gWalk")) {
+##     stop("iso_gw must be either a path to a gWalk or a gWalk object")
+##   }
+##   ## fusions junctions
+##   ## fusions_gw$nodes$mark(fus_gw_id = paste0("ID",1:length(fusions_gw$nodes))) #add id, isoseq should already have a read
+##   ## for each walk- need edges involved so I can mark the edges with walk ids
+##   fusions_gw$set(fus_id = paste0("fus",1:length(fusions_gw)))
+##   fusions.edges.dt = fusions_gw$dt[,.(fus_id, sedge.id)]
+##   id_edges.dt = fusions.edges.dt[, .(sedge.id = unlist(sedge.id)), by = fus_id]
+##   ## unique_edge.dt = id_edges.dt[, .(all_ids = list(unique(fus_id))), by = sedge.id]
+##   unique_edge.dt = id_edges.dt[, .(all_ids = paste0((unique(fus_id)), collapse = ",")), by = sedge.id]
+##   ## mark the edges and get the graph
+##   mark.dt = fusions_gw$edgesdt[,.(sedge.id)]
+##   mark.dt[, order := 1:.N]
+##   mark.dt = merge.data.table(mark.dt,unique_edge.dt, by = "sedge.id", all.x = TRUE)
+##   fusions_gw$edges$mark(all_ids = mark.dt$all_ids)
+##   fusions.gg = fusions_gw$graph
+##   ## fusions.jj = fusions.gg$junctions[type %in% filter_type,]
+##   ## iso junctions
+##   iso_gw$set(fus_id = paste0("Iso",1:length(iso_gw)))
+##   iso.edges.dt = iso_gw$dt[,.(fus_id, sedge.id)]
+##   id_edges.dt = iso.edges.dt[, .(sedge.id = unlist(sedge.id)), by = fus_id]
+##   id_edges.dt[, all_ids := list(unique(fus_id)), by = "sedge.id"]
+##   ## unique_edge.dt = id_edges.dt[, .(all_ids = list(unique(fus_id))), by = sedge.id]
+##   unique_edge.dt = id_edges.dt[, .(all_ids = paste0((unique(fus_id)), collapse = ",")), by = sedge.id]
+##   ## mark the edges and get the graph
+##   mark.dt = iso_gw$edgesdt[,.(sedge.id)]
+##   mark.dt[, order := 1:.N]
+##   mark.dt = merge.data.table(mark.dt,unique_edge.dt, by = "sedge.id", all.x = TRUE)
+##   iso_gw$edges$mark(all_ids = mark.dt$all_ids)
+##   iso.gg = iso_gw$graph
+##   ## iso.jj = iso.gg$junctions[type %in% filter_type,]
+##   browser()
+##   ## iso_gw$nodes$mark(iso_gw_id = paste0("ID",1:length(iso_gw$nodes)))
+##   ## iso.gg = iso_gw$graph
+##   ## iso.jj = iso.gg$junctions[type %in% filter_type,]
+##   if(force_seqlengths) {
+##     fusions.jj = jJ(gr.nochr(fusions.jj$grl))
+##     iso.jj = jJ(gr.nochr(iso.jj$grl))
+##   }
+##   ## merge the junctions
+##   merged.jj = gGnome::merge.Junction(fusions.jj, iso.jj, pad = pad,all = TRUE)
+##   merged.jj$dt[,.(seen.by.ra1,seen.by.ra2)] %>% table
+##   ## get the ids that are shared
+##   merged.simple.dt = merged.jj$dt[,.(bp1.ra1,bp2.ra1,bp1.ra2,bp2.ra2, all_ids.ra1, all_ids.ra2, seen.by.ra1, seen.by.ra2)]
+##   names(merged.simple.dt) = gsub(".ra1","_gg",names(merged.simple.dt))
+##   names(merged.simple.dt) = gsub(".ra2","_iso",names(merged.simple.dt))
+  
+##   return()
+  
+## }
+
+
+
 ## get fusion data from isoseq task using fusion_breakpoints_groups
 get_fus_data = function(fusion_breakpoints_groups, cores = 1) {
   fus.groups.dt = read_fusion_groups(fusion_breakpoints_groups)
@@ -999,4 +1069,178 @@ quick_ireads = function(bam,
     message("type is 'grl' returning grl")
     return(reads.grl)
   }
+}
+
+
+## much cleaner version of get_ordered_fusions2 - way cooler too with labeling for each transcripts (exons, introns, UTR...)
+quick_fusions = function(fusion_bam, #subset bam to only fusion reads
+                         fusions_dt, #fusions data.table after running get_fus_data
+                         all_reads = FALSE,  #whether to just use the first read or all reads
+                         pad = 1e4,                #pad for reading in bam
+                         gtf,                      #gr gtf file with gene_id
+                         remove_cigar_tags = c("S","D"),
+                         cores = 1)
+{
+  ## get the coordinates from the fusions_dt
+  gr.dt1 = fusions_dt[,.(chr1,start1,end1)] %>% setnames(.,c("seqnames","start","end"))
+  gr.dt2 = fusions_dt[,.(chr2,start2,end2)] %>% setnames(.,c("seqnames","start","end"))
+  gr = rbind(gr.dt1,gr.dt2) %>% GRanges(.,seqlengths = hg_seqlengths())
+  gr = gr + pad
+  message(paste0("Reading in ",fusion_bam))
+  fus.og.gr = bamUtils::read.bam(fusion_bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
+  fus.gr = bamUtils::splice.cigar(fus.og.gr,get.seq = TRUE, rem.soft = FALSE, return.grl = FALSE)
+  names(fus.gr) = NULL
+  fus.gr = fus.gr %Q% (!(type %in% remove_cigar_tags))
+  ## add back meta data from pre splicing cigar
+  fus.meta.dt = as.data.table(mcols(fus.og.gr))
+  fus.meta.dt[, new_row := 1:.N]
+  names_add = unique(c("new_row",names(fus.meta.dt)[!(names(fus.meta.dt) %in% names(mcols(fus.gr)))]))
+  fus.meta.dt = fus.meta.dt[,..names_add]
+  add.meta.dt = data.table(new_row = fus.gr$rid)
+  add.meta.dt = merge.data.table(add.meta.dt, fus.meta.dt, by = "new_row", all.x = TRUE, all.y = FALSE, allow.cartesian = FALSE)
+  mcols(fus.gr) = cbind(mcols(fus.gr),add.meta.dt)
+  if(length(fus.gr) == 0) {
+    warning("no reads in the specified region. Returning null")
+    return(NULL)
+  }
+  message("Done reading")
+  if(!all_reads) { #if false subsetting to one read
+    fus.gr = fus.gr %Q% (qname %in% fusions_dt$first_read)
+  }
+  ## process the multiple alignment differently so add a new id
+  meta.dt = as.data.table(fus.gr[,c("qname","flag","mapq","cigar")])
+  meta.dt[, id_alignment := .GRP, by = c("qname","flag","mapq","cigar")]
+  meta.dt[, id_read := paste0(qname,"_",id_alignment)]
+  fus.gr$id_read = meta.dt$id_read
+  fus.gr$id_alignment = meta.dt$id_alignment
+  fus.gr$og_order = 1:length(fus.gr)
+  ## order these fusions to start- have to order the breakpoints - add which label
+  split_cols = fusions_dt[, tstrsplit(AC, "/", fixed=TRUE)]
+  col_names = paste0("bp", seq_along(split_cols))
+  setnames(split_cols, col_names)
+  split_cols[, bp1 := gsub("AC=","",bp1)]
+  fusions_dt = cbind(fusions_dt,split_cols)
+  ## fusions_dt[, AC := gsub("AC=", "", AC)]
+  ## fusions_dt[, paste0("bp", 1:length(tstrsplit(AC[1], "/", fixed=TRUE))) := tstrsplit(AC, "/", fixed=TRUE)]
+  ## get the reference gene identified
+  fusions_dt[, GI := sub(".*GI=([^;]+);.*", "\\1", info)]
+  gi_split = fusions_dt[, tstrsplit(GI, ",")]
+  gi_col_names = paste0("gene_id", seq_along(gi_split))
+  setnames(gi_split, gi_col_names)
+  fusions_dt = cbind(fusions_dt,gi_split)
+  message("Annotating each read with reference gene annotations")
+  ## now annotate each alignment with each reference gene
+  reads.lst = mclapply(unique(fus.gr$id_read), function(x) {
+    sub.gr = fus.gr %Q% (id_read == x)
+    ## get which bp which also tells us which reference gene
+    og_qname = sub.gr$qname %>% unique
+    sub_fusions.dt = fusions_dt[sapply(reads, function(x) any(x %like% og_qname))]
+    if(nrow(sub_fusions.dt) > 1) {
+      warning("This read ",og_qname, "is found in multiple fusions inputted. Picking the first one. id = ", sub_fusions.dt[1,]$id, "; ", sub_fusions.dt[1,]$AC)
+      sub_fusions.dt = sub_fusions.dt[1,]
+    }
+    ## which bp does this correspond to-not sure about more than two breakpoints- I guess I just add more here
+    inter.gr1 = sub.gr %&% parse.gr(sub_fusions.dt$bp1)
+    inter.gr2 = sub.gr %&% parse.gr(sub_fusions.dt$bp2)
+    if(length(inter.gr1) == 0 & length(inter.gr2) == 0) {
+      inter.gr1 = sub.gr %&% (parse.gr(sub_fusions.dt$bp1) + 500)
+      inter.gr2 = sub.gr %&% (parse.gr(sub_fusions.dt$bp2) + 500)
+      if(length(inter.gr1) == 0 & length(inter.gr2) == 0) {
+        inter.gr1 = sub.gr %&% (parse.gr(sub_fusions.dt$bp1) + 1000)
+        inter.gr2 = sub.gr %&% (parse.gr(sub_fusions.dt$bp2) + 1000)
+      }
+    }
+    ## assign the breakpoint
+    if(length(inter.gr1) != 0 & length(inter.gr2) != 0) {
+      warning("This read ", og_qname, " with new id ", unique(sub.gr$id_read), "has multiple potential breakpoints. Selecting bp1,", sub_fusions.dt$bp1, "and reference gene ", sub_fusions.dt$gene_id1)
+      bp_read = sub_fusions.dt$bp1
+      gene_id_read = sub_fusions.dt$gene_id1
+      gene_read = sub_fusions.dt$gene1
+      breakpoint_number = "bp1"
+    } else if (length(inter.gr1) != 0) {
+      bp_read = sub_fusions.dt$bp1
+      gene_id_read = sub_fusions.dt$gene_id1
+      gene_read = sub_fusions.dt$gene1
+      breakpoint_number = "bp1"
+    } else if (length(inter.gr2) != 0) {
+      bp_read = sub_fusions.dt$bp2
+      gene_id_read = sub_fusions.dt$gene_id2
+      gene_read = sub_fusions.dt$gene2
+      breakpoint_number = "bp2"
+    }
+    sub.gr$bp_read = bp_read
+    sub.gr$gene_id = gene_id_read
+    sub.gr$breakpoint_number = breakpoint_number
+    ## subset the gtf for this gene
+    sub.gtf.gr = gtf %Q% (gene_name == gene_read)
+    if(length(sub.gtf.gr) == 0) {
+      warning("Read :", og_qname, "could not be split based on reference reads")
+      sub.gr$coding_type_simple = "unassigned"
+      return(sub.gr)
+    }
+    ## construct non overlapping reference granges
+    sub.gtf.gr = sub.gtf.gr %Q% (type != "transcript") #this is the full reference coordiantes which I do not want for annotating
+    sub.gtf.gr = sub.gtf.gr %Q% (type != "intron")
+    sub.gtf.gr$type = sub.gtf.gr$type %>% as.character #this is sometimes a factor and messes up gr.val
+    ## create tiled reference 
+    tile.gr = gr.tile(sub.gtf.gr, width = 1)
+    tile.gr = gr.val(tile.gr,sub.gtf.gr, "type")
+    tile.dt = gr2dt(tile.gr)
+    tile.dt[, c("query.id","tile.id") := NULL]
+    tile.dt = unique(tile.dt)
+    ## reduce the tile so no overlapping annotations
+    tile.dt[, coding_type_vect := lapply(type, function(x) unlist(strsplit(x, ", ")))]
+    tile.dt[, coding_type_simple := sapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
+                                                                         ifelse("stop_codon" %in% x, "stop_codon",
+                                                                         ifelse("exon" %in% x, "exon",
+                                                                         ifelse("UTR" %in% x, "UTR",
+                                                                         ifelse("CDS" %in% x, "exon", "intron"))))))]
+    ## had to change away from below which works well for isoform differences-using a different gtf here because it needs to be collaped 
+    ## tile.dt[, coding_type_simple := sapply(coding_type_vect, function(x) ifelse("start_codon" %in% x, "start_codon",
+    ##                                                                      ifelse("stop_codon" %in% x, "stop_codon",
+    ##                                                                      ifelse("UTR" %in% x, "UTR",
+    ##                                                                      ifelse("exon" %in% x, "exon",
+    ##                                                                      ifelse("CDS" %in% x, "exon", "intron"))))))]
+    tile.dt[, c("type","coding_type_vect") := NULL]
+    tile.gr2 = GRanges(tile.dt, seqlengths = hg_seqlengths())
+    tile.gr3 = gr.reduce(tile.gr2, by = "coding_type_simple", ignore.strand = FALSE)
+    ## now break the read up
+    sub.gr2 = gr.breaks(sub.gr, tile.gr3)
+    ## get only the ones that were actually mapped
+    sub.gr$mapped = "yes"
+    sub.gr2 = gr.val(sub.gr2, sub.gr, "mapped") %Q% (mapped != "")
+    sub.gr2$mapped = NULL
+    sub.dt = gr2dt(sub.gr2)
+    sub.dt[, id_read := unique(sub.gr$id_read)]
+    sub.dt[, bp_read := bp_read]
+    sub.dt[, gene_id := gene_id_read]
+    sub.dt[, breakpoint_id := breakpoint_number]
+    return(sub.dt)
+  }, mc.cores = cores)
+  reads.dt = rbindlist(reads.lst, fill = TRUE)
+  ## add meta data back
+  fus.dt = gr2dt(fus.gr)
+  unique_meta.dt = fus.dt[,.(qname,id_alignment,cigar,mapq,seq, id_read)] %>% unique
+  reads.dt2 = merge.data.table(reads.dt, unique_meta.dt, by = "id_read", all.x = TRUE)
+  ## order the breakpoints
+  reads.dt2[, breakpoint_id := factor(breakpoint_id, levels = c("bp1","bp2","bp3","bp4","bp5","bp6"))]
+  reads.dt2[strand == "+", order_start := start]
+  reads.dt2[strand == "-", order_start := -start]
+  reads.dt3 = reads.dt2[order(breakpoint_id,order_start),]
+  ## convert to granges and gwalk
+  reads.gr = GRanges(reads.dt3, seqlengths = hg_seqlengths())
+  reads.grl = rtracklayer::split(reads.gr, f = mcols(reads.gr)["qname"])
+  message("Converted reads to grl. Adding meta data to grl")
+  qnames_grl = data.table(qname = (reads.grl %>% names))
+  mcols(reads.grl) = qnames_grl
+  message("converting grl to gW object")
+  reads.gw = gW(grl = reads.grl)
+  ## add coloring of nodes to match track.gencode
+  cmap.dt = data.table(category = c("exon", "intron", "start_codon", "stop_codon", "UTR", "UTR_long","del", "missing", "unassigned", "outside_ref"), color = c("#0000FF99", "#FF0000B3", "green", "red", "#A020F066", "red", "orange", "orange", "blue", "blue"))
+  for(x in 1:nrow(cmap.dt)) {
+    cmap.sub = cmap.dt[x,]
+    reads.gw$nodes[coding_type_simple == cmap.sub$category]$mark(col = cmap.sub$color)
+  }
+  reads.gw
+  return(reads.gw)
 }
