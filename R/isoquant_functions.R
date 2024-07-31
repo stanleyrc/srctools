@@ -1014,7 +1014,7 @@ quick_ireads = function(bam,
     tile.gr2 = GRanges(tile.dt, seqlengths = hg_seqlengths())
     tile.gr3 = gr.reduce(tile.gr2, by = "coding_type_simple", ignore.strand = FALSE)
     ##
-    sub.gr2 = gr.breaks(sub.gr, tile.gr3)
+    sub.gr2 = gr.breaks(query = sub.gr, bps = tile.gr3)
     ## add whether each exists
     sub.gr$mapped = TRUE
     sub.gr3 = gr.val(sub.gr2, sub.gr, c("mapped","type","riid")) #riid should be in order but will have NAs so added a new order at the bottom here - need to switch order if transcript on negative strand
@@ -1079,6 +1079,7 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
                          pad = 1e4,                #pad for reading in bam
                          gtf,                      #gr gtf file with gene_id
                          remove_cigar_tags = c("S","D"),
+                         unique_reads = TRUE, #whether to grab unique after grabbing the reads
                          cores = 1)
 {
   ## get the coordinates from the fusions_dt
@@ -1088,6 +1089,9 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
   gr = gr + pad
   message(paste0("Reading in ",fusion_bam))
   fus.og.gr = bamUtils::read.bam(fusion_bam, gr, stripstrand = FALSE, verbose = TRUE, pairs.grl.split = FALSE)
+  if(unique_reads) {
+    fus.og.gr = gr2dt(fus.og.gr) %>% unique %>% GRanges(., seqlengths = hg_seqlengths())
+  }
   fus.gr = bamUtils::splice.cigar(fus.og.gr,get.seq = TRUE, rem.soft = FALSE, return.grl = FALSE)
   names(fus.gr) = NULL
   fus.gr = fus.gr %Q% (!(type %in% remove_cigar_tags))
@@ -1128,8 +1132,10 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
   gi_col_names = paste0("gene_id", seq_along(gi_split))
   setnames(gi_split, gi_col_names)
   fusions_dt = cbind(fusions_dt,gi_split)
+  ## browser()
   message("Annotating each read with reference gene annotations")
   ## now annotate each alignment with each reference gene
+  ## reads.lst = mclapply(unique(fus.gr$id_read)[c(1,2,4,5,6,8,9)], function(x) {
   reads.lst = mclapply(unique(fus.gr$id_read), function(x) {
     sub.gr = fus.gr %Q% (id_read == x)
     ## get which bp which also tells us which reference gene
@@ -1139,7 +1145,7 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
       warning("This read ",og_qname, "is found in multiple fusions inputted. Picking the first one. id = ", sub_fusions.dt[1,]$id, "; ", sub_fusions.dt[1,]$AC)
       sub_fusions.dt = sub_fusions.dt[1,]
     }
-    ## which bp does this correspond to-not sure about more than two breakpoints- I guess I just add more here
+    ## which bp does this correspond to-not sure about more than two breakpoints- I guess I just add more pad here
     inter.gr1 = sub.gr %&% parse.gr(sub_fusions.dt$bp1)
     inter.gr2 = sub.gr %&% parse.gr(sub_fusions.dt$bp2)
     if(length(inter.gr1) == 0 & length(inter.gr2) == 0) {
@@ -1149,9 +1155,22 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
         inter.gr1 = sub.gr %&% (parse.gr(sub_fusions.dt$bp1) + 1000)
         inter.gr2 = sub.gr %&% (parse.gr(sub_fusions.dt$bp2) + 1000)
       }
+      if(length(inter.gr1) == 0 & length(inter.gr2) == 0) {
+        sub.gr$bp_read = NA
+        sub.gr$gene_id = NA
+        sub.gr$breakpoint_number = NA
+        warning("Read :", og_qname, "could not be split based on reference reads")
+        sub.gr$coding_type_simple = "unassigned"
+        ## have to subset the columns to what a working output will work with
+        cols_keep = c("seqnames", "start", "end", "strand", "width", "type", "rid", "riid", "fid", "qname", "new_row", "flag", "qwidth", "mapq", "cigar", "mrnm", "mpos", "isize", "seq", "qual", "MD", "MQ", "id_read", "id_alignment", "og_order", "bp_read", "gene_id", "breakpoint_number", "qid", "breakpoint_id")
+        sub.dt = gr2dt(sub.gr)
+        cols_keep = cols_keep[cols_keep %in% names(sub.dt)]
+        sub.dt = sub.dt[,..cols_keep]
+        return(sub.dt)
+      }
     }
     ## assign the breakpoint
-    if(length(inter.gr1) != 0 & length(inter.gr2) != 0) {
+    if(length(inter.gr1) != 0 & length(inter.gr2) != 0) { #both intersections non zero
       warning("This read ", og_qname, " with new id ", unique(sub.gr$id_read), "has multiple potential breakpoints. Selecting bp1,", sub_fusions.dt$bp1, "and reference gene ", sub_fusions.dt$gene_id1)
       bp_read = sub_fusions.dt$bp1
       gene_id_read = sub_fusions.dt$gene_id1
@@ -1176,7 +1195,12 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
     if(length(sub.gtf.gr) == 0) {
       warning("Read :", og_qname, "could not be split based on reference reads")
       sub.gr$coding_type_simple = "unassigned"
-      return(sub.gr)
+      ## have to subset the columns to what a working output will work with
+      cols_keep = c("seqnames", "start", "end", "strand", "width", "type", "rid", "riid", "fid", "qname", "new_row", "flag", "qwidth", "mapq", "cigar", "mrnm", "mpos", "isize", "seq", "qual", "MD", "MQ", "id_read", "id_alignment", "og_order", "bp_read", "gene_id", "breakpoint_number", "qid", "breakpoint_id")
+      sub.dt = gr2dt(sub.gr)
+      cols_keep = cols_keep[cols_keep %in% names(sub.dt)]
+      sub.dt = sub.dt[,..cols_keep]
+      return(sub.dt)
     }
     ## construct non overlapping reference granges
     sub.gtf.gr = sub.gtf.gr %Q% (type != "transcript") #this is the full reference coordiantes which I do not want for annotating
@@ -1205,12 +1229,15 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
     tile.gr2 = GRanges(tile.dt, seqlengths = hg_seqlengths())
     tile.gr3 = gr.reduce(tile.gr2, by = "coding_type_simple", ignore.strand = FALSE)
     ## now break the read up
-    sub.gr2 = gr.breaks(sub.gr, tile.gr3)
+    sub.gr2 = gr.breaks(query = sub.gr, bps = tile.gr3)
     ## get only the ones that were actually mapped
     sub.gr$mapped = "yes"
-    sub.gr2 = gr.val(sub.gr2, sub.gr, "mapped") %Q% (mapped != "")
+    sub.gr2 = gr.val(sub.gr2, sub.gr, "mapped")
+    sub.gr2 = sub.gr2 %Q% (mapped != "")
     sub.gr2$mapped = NULL
-    sub.dt = gr2dt(sub.gr2)
+    ## 
+    sub.gr3 = gr.val(sub.gr2, tile.gr3, "coding_type_simple")
+    sub.dt = gr2dt(sub.gr3)
     sub.dt[, id_read := unique(sub.gr$id_read)]
     sub.dt[, bp_read := bp_read]
     sub.dt[, gene_id := gene_id_read]
@@ -1218,17 +1245,17 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
     return(sub.dt)
   }, mc.cores = cores)
   reads.dt = rbindlist(reads.lst, fill = TRUE)
-  ## add meta data back
-  fus.dt = gr2dt(fus.gr)
-  unique_meta.dt = fus.dt[,.(qname,id_alignment,cigar,mapq,seq, id_read)] %>% unique
-  reads.dt2 = merge.data.table(reads.dt, unique_meta.dt, by = "id_read", all.x = TRUE)
+  ## ## add meta data back - don't need this, gr.breaks retains the meta data
+  ## fus.dt = gr2dt(fus.gr)
+  ## unique_meta.dt = fus.dt[,.(qname,id_alignment,cigar,mapq,seq, id_read)] %>% unique
+  ## reads.dt2 = merge.data.table(reads.dt, unique_meta.dt, by = "id_read", all.x = TRUE)
   ## order the breakpoints
-  reads.dt2[, breakpoint_id := factor(breakpoint_id, levels = c("bp1","bp2","bp3","bp4","bp5","bp6"))]
-  reads.dt2[strand == "+", order_start := start]
-  reads.dt2[strand == "-", order_start := -start]
-  reads.dt3 = reads.dt2[order(breakpoint_id,order_start),]
+  reads.dt[, breakpoint_id := factor(breakpoint_id, levels = c("bp1","bp2","bp3","bp4","bp5","bp6"))]
+  reads.dt[strand == "+", order_start := start]
+  reads.dt[strand == "-", order_start := -start]
+  reads.dt2 = reads.dt[order(breakpoint_id,order_start),]
   ## convert to granges and gwalk
-  reads.gr = GRanges(reads.dt3, seqlengths = hg_seqlengths())
+  reads.gr = GRanges(reads.dt2, seqlengths = hg_seqlengths())
   reads.grl = rtracklayer::split(reads.gr, f = mcols(reads.gr)["qname"])
   message("Converted reads to grl. Adding meta data to grl")
   qnames_grl = data.table(qname = (reads.grl %>% names))
@@ -1241,6 +1268,5 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
     cmap.sub = cmap.dt[x,]
     reads.gw$nodes[coding_type_simple == cmap.sub$category]$mark(col = cmap.sub$color)
   }
-  reads.gw
   return(reads.gw)
 }
