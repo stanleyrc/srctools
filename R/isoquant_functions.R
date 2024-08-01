@@ -570,6 +570,7 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
     return(NULL)
   }
   if(get_reads) {
+    ## browser()
     unique_samples_reads.dt = genes_reads.dt2[,.(first_read_assignment,gene_name,first_read_assignment_sample,final_grp_assignment,final_count_assignment_all_samples)] %>% unique
     uniq_samples = unique(unique_samples_reads.dt$first_read_assignment_sample)
     message("Getting one read per unique isoform")
@@ -584,7 +585,6 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       gene.gr = (gene.gr + pad_get_iso) %>% gr.reduce
       cols_keep = c("qname", "chr_classification", "strand_classification", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info", "structural_category")
       reads_sub.dt = genes_reads.dt[,..cols_keep]
-      ## browser()
       ## gene.gw = get_iso_reads(bam,
       gene.gw = quick_ireads(bam,
                               gr = (gene.gr),
@@ -1017,12 +1017,17 @@ quick_ireads = function(bam,
     ##
     sub.gr2 = gr.breaks(query = sub.gr, bps = tile.gr3)
     ## add whether each exists
-    sub.gr$mapped = TRUE
-    sub.gr3 = gr.val(sub.gr2, sub.gr, c("mapped","type","riid")) #riid should be in order but will have NAs so added a new order at the bottom here - need to switch order if transcript on negative strand
+    ## sub.gr$mapped = TRUE
+    sub.gr$mapped = "yes"
+    sub.gr2 = gr.val(sub.gr2, sub.gr, "mapped") #riid should be in order but will have NAs so added a new order at the bottom here - need to switch order if transcript on negative strand
+    ## new 7-31-24
+    sub.gr2 = sub.gr2 %Q% (mapped != "")
+    sub.gr2$mapped = NULL
+    sub.gr3 = gr.val(sub.gr2, tile.gr3, "coding_type_simple")
     read.dt = gr2dt(sub.gr3)
-    read.dt[is.na(mapped), coding_type_simple := "del"]
-    read.dt[is.na(mapped), type := NA]
-    read.dt[, qname := x]
+    read.dt[is.na(coding_type_simple),coding_type_simple := "missing"]
+    read.dt[coding_type_simple == "",coding_type_simple := "missing"]
+    ## end new
     if(as.character(unique(ref.tr.gr@strand@values)) == "-") {
       read.dt = read.dt[, order := .N:1]
       read.dt = read.dt[order(order),]
