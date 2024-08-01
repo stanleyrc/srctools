@@ -82,8 +82,8 @@ get_fus_data = function(fusion_breakpoints_groups, cores = 1) {
     ## subset to get granges for each pair of breakpoints
     sub.dt = fus.sub.dt[x,]
     bp.id = sub.dt$id
-    sub.dt[, reads := list(fus.groups.dt[id == bp.id,]$qname)]
-    sub.dt[, read_count := length(fus.groups.dt[id == bp.id,]$qname)]
+    sub.dt[, reads := list(unique(fus.groups.dt[id == bp.id,]$qname))]
+    sub.dt[, read_count := length(unique(fus.groups.dt[id == bp.id,]$qname))]
     sub.dt[, first_read := fus.groups.dt[id == bp.id,]$qname[1]]
     return(sub.dt)
   }, mc.cores = cores)
@@ -310,7 +310,7 @@ reads_genes = function(ref_gtf.gr, sample_gtf.gr, reads.dt, genes, group_by = "e
   gene.dt[, count_exons_only := .N, by = c("transcript_id","exons_minus_ends")]
   gene.dt = gene.dt[order(-count_exons_only),]
   gene.dt[, grp_exons_only := .GRP, by = c("transcript_id","exons_minus_ends")]
-  browser()
+  ## browser()
   if(group_by == "exons_assignment_events") {
   ## get all reads as a list object 
     gene.dt[, reads_grp_assignment_type_exons_minus_ends := list(list(sort(qname))), by = grp_assignment_type_exons_minus_ends]
@@ -584,6 +584,7 @@ genes_reads2gw = function(genes_reads.dt, #output of genes_reads_group_by_sample
       gene.gr = (gene.gr + pad_get_iso) %>% gr.reduce
       cols_keep = c("qname", "chr_classification", "strand_classification", "transcript_id", "gene_id", "assignment_type", "assignment_events", "exons", "additional_info", "structural_category")
       reads_sub.dt = genes_reads.dt[,..cols_keep]
+      ## browser()
       ## gene.gw = get_iso_reads(bam,
       gene.gw = quick_ireads(bam,
                               gr = (gene.gr),
@@ -1075,10 +1076,12 @@ quick_ireads = function(bam,
 ## much cleaner version of get_ordered_fusions2 - way cooler too with labeling for each transcripts (exons, introns, UTR...)
 quick_fusions = function(fusion_bam, #subset bam to only fusion reads
                          fusions_dt, #fusions data.table after running get_fus_data
-                         all_reads = FALSE,  #whether to just use the first read or all reads
+                         first_read = TRUE,  #whether to just use the first read or all reads
                          pad = 1e4,                #pad for reading in bam
                          gtf,                      #gr gtf file with gene_id
                          remove_cigar_tags = c("S","D"),
+                         sample_reads = FALSE,
+                         sample_count = 10, #only used if sample reads is TRUE, requires read count column in fusions_dt
                          unique_reads = TRUE, #whether to grab unique after grabbing the reads
                          cores = 1)
 {
@@ -1108,8 +1111,25 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
     return(NULL)
   }
   message("Done reading")
-  if(!all_reads) { #if false subsetting to one read
+  if(first_read) { #if false subsetting to one read
     fus.gr = fus.gr %Q% (qname %in% fusions_dt$first_read)
+  }
+  if(sample_reads) {
+    if(first_read) {
+      stop("first_read must be FALSE if sample_reads is TRUE")
+    }
+    fusions_dt[read_count > sample_count,sample_reads := TRUE]
+    fusions_dt[read_count <= sample_count,sample_reads := FALSE]
+    ## sample if greater than 10
+    fusions_dt[, sub_reads := lapply(.I, function(i) {
+      if (sample_reads[i]) {
+        list(sample(unlist(reads[[i]]), sample_count))
+      } else {
+        reads[i]
+      }
+    })]
+    subset_reads_q = fusions_dt$sub_reads %>% unlist %>% unique
+    fus.gr = fus.gr %Q% (qname %in% subset_reads_q)
   }
   ## process the multiple alignment differently so add a new id
   meta.dt = as.data.table(fus.gr[,c("qname","flag","mapq","cigar")])
@@ -1132,7 +1152,6 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
   gi_col_names = paste0("gene_id", seq_along(gi_split))
   setnames(gi_split, gi_col_names)
   fusions_dt = cbind(fusions_dt,gi_split)
-  ## browser()
   message("Annotating each read with reference gene annotations")
   ## now annotate each alignment with each reference gene
   ## reads.lst = mclapply(unique(fus.gr$id_read)[c(1,2,4,5,6,8,9)], function(x) {
@@ -1242,6 +1261,7 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
     sub.dt[, bp_read := bp_read]
     sub.dt[, gene_id := gene_id_read]
     sub.dt[, breakpoint_id := breakpoint_number]
+    sub.dt[is.na(coding_type_simple),coding_type_simple := "unassigned"]
     return(sub.dt)
   }, mc.cores = cores)
   reads.dt = rbindlist(reads.lst, fill = TRUE)
@@ -1254,6 +1274,7 @@ quick_fusions = function(fusion_bam, #subset bam to only fusion reads
   reads.dt[strand == "+", order_start := start]
   reads.dt[strand == "-", order_start := -start]
   reads.dt2 = reads.dt[order(breakpoint_id,order_start),]
+  reads.dt2[is.na(coding_type_simple), coding_type_simple := "No_Value"]
   ## convert to granges and gwalk
   reads.gr = GRanges(reads.dt2, seqlengths = hg_seqlengths())
   reads.grl = rtracklayer::split(reads.gr, f = mcols(reads.gr)["qname"])
